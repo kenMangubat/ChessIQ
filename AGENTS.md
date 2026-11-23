@@ -162,9 +162,10 @@ After implementation:
 
 1. **Official Repository**: When the user requests to push or upload to GitHub, always use the designated repository URL:
    `https://github.com/kenMangubat/ChessIQ`
-2. **No Extra Repositories or Nested Folders**: Never create another repository and never wrap the project files in an unnecessary nested subfolder (e.g., `ChessIQ/ChessIQ/`). Put files directly at the repository root.
-3. **Preserve Repository**: Never delete or remove the repository.
-4. **Binary & Cache Exclusions**: Always ensure `.gitignore` excludes `.venv/`, `__pycache__/`, `.pytest_cache/`, `*.bak_*` backups, and large executable binaries exceeding GitHub limits (e.g. `engine/stockfish.exe`).
+2. **Account & Username**: The GitHub account username is `kenMangubat`. Authentication is handled securely via Git Credential Manager; never store or commit passwords or tokens to this file or repository.
+3. **No Extra Repositories or Nested Folders**: Never create another repository and never wrap the project files in an unnecessary nested subfolder (e.g., `ChessIQ/ChessIQ/`). Put files directly at the repository root.
+4. **Preserve Repository**: Never delete or remove the repository.
+5. **Binary & Cache Exclusions**: Always ensure `.gitignore` excludes `.venv/`, `__pycache__/`, `.pytest_cache/`, `*.bak_*` backups, and large executable binaries exceeding GitHub limits (e.g. `engine/stockfish.exe`).
 
 ---
 
