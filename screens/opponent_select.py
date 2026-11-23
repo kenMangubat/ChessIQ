@@ -12,12 +12,13 @@ from __future__ import annotations
 import math
 from pathlib import Path
 import random
+import threading
 from typing import Any
 
 import numpy as np
 import pygame
 
-from others.config import ASSETS_DIR
+from others.config import ASSETS_DIR, ICON_MASTER_PATH, LOGO_SOURCE_PATH
 from screens.base_screen import BaseScreen
 from ui.animated_board import MAX_ANIMATION_DT, _load_svg_at_size
 from ui.button import Button
@@ -92,43 +93,81 @@ def _lerp_rgb(
     )
 
 
+_FONT_PATH_CACHE: dict[str, str | None] = {}
+
+
 def _load_modern_font(size: int, weight: str = "regular") -> pygame.font.Font:
     """Load clean modern UI typography using genuine font-weight files when installed."""
     size = max(10, size)
-    preferred_bold = ("Plus Jakarta Sans", "Manrope", "Segoe UI")
-    preferred_semi = ("Plus Jakarta Sans SemiBold", "Manrope SemiBold", "Segoe UI Semibold", "Segoe UI")
-    preferred_reg = ("Plus Jakarta Sans", "Manrope", "Segoe UI")
+    if weight not in _FONT_PATH_CACHE:
+        resolved: str | None = None
+        if weight == "bold":
+            for family in ("Plus Jakarta Sans", "Manrope", "Segoe UI"):
+                path = pygame.font.match_font(family, bold=True)
+                if path:
+                    resolved = path
+                    break
+        elif weight == "semibold":
+            for family in ("Plus Jakarta Sans SemiBold", "Manrope SemiBold", "Segoe UI Semibold", "Segoe UI"):
+                path = pygame.font.match_font(family)
+                if path:
+                    resolved = path
+                    break
+        else:
+            for family in ("Plus Jakarta Sans", "Manrope", "Segoe UI"):
+                path = pygame.font.match_font(family)
+                if path:
+                    if path.lower().endswith("segoeuil.ttf"):
+                        alt = Path(path).with_name("segoeui.ttf")
+                        if alt.is_file():
+                            path = str(alt)
+                    resolved = path
+                    break
+        _FONT_PATH_CACHE[weight] = resolved
 
-    if weight == "bold":
-        for family in preferred_bold:
-            path = pygame.font.match_font(family, bold=True)
-            if path:
-                return pygame.font.Font(path, size)
-        return pygame.font.SysFont("Segoe UI", size, bold=True)
-
-    if weight == "semibold":
-        for family in preferred_semi:
-            path = pygame.font.match_font(family)
-            if path:
-                return pygame.font.Font(path, size)
-        return pygame.font.SysFont("Segoe UI", size, bold=True)
-
-    for family in preferred_reg:
-        path = pygame.font.match_font(family)
-        if path:
-            if path.lower().endswith("segoeuil.ttf"):
-                alt = Path(path).with_name("segoeui.ttf")
-                if alt.is_file():
-                    return pygame.font.Font(str(alt), size)
-            return pygame.font.Font(path, size)
-    return pygame.font.SysFont("Segoe UI", size)
+    font_path = _FONT_PATH_CACHE[weight]
+    if font_path:
+        return pygame.font.Font(font_path, size)
+    return pygame.font.SysFont("Segoe UI", size, bold=(weight != "regular"))
 
 
 class OpponentSelectScreen(BaseScreen):
     """Choose one of the three Chess Ken AI opponent profiles."""
 
+    _raw_avatar_cache: dict[str, pygame.Surface] = {}
     _avatar_cache: dict[tuple[str, int], pygame.Surface] = {}
     _icon_cache: dict[tuple[str, int, tuple[int, int, int]], pygame.Surface] = {}
+    _bg_cache: dict[tuple[int, int], pygame.Surface] = {}
+    _glow_cache: dict[tuple[int, tuple[int, int, int], int], pygame.Surface] = {}
+    _card_fx_cache: dict[
+        tuple[int, int, int, tuple[int, int, int], bool],
+        tuple[pygame.Surface, pygame.Surface, pygame.Surface],
+    ] = {}
+    _preload_started: bool = False
+    _preload_lock = threading.Lock()
+
+    @classmethod
+    def preload_assets(cls) -> None:
+        """Decode heavy bot portrait PNGs on a background daemon thread so PLAY opens instantly."""
+        with cls._preload_lock:
+            if cls._preload_started:
+                return
+            cls._preload_started = True
+
+        def _worker() -> None:
+            for bot in _BOTS:
+                filename = str(bot["image"])
+                if filename in cls._raw_avatar_cache:
+                    continue
+                path = ASSETS_DIR / filename
+                if path.is_file():
+                    try:
+                        # Software decode only (no convert_alpha off the main thread)
+                        cls._raw_avatar_cache[filename] = pygame.image.load(str(path))
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_worker, name="opponent-asset-preload", daemon=True).start()
 
     def __init__(self, screen: pygame.Surface) -> None:
         super().__init__(screen)
@@ -175,7 +214,7 @@ class OpponentSelectScreen(BaseScreen):
         self._build_layout()
 
         # ── Cached Visual Assets & Surfaces ───────────────────────────
-        self._knight_emblem = self._load_knight_emblem(max(22, round(30 * ui_s)))
+        self._knight_emblem = self._load_knight_emblem(max(32, round(40 * ui_s)))
         self._header_title_surf = self._render_gradient_headline()
         self._subtitle_surf = self._font_subtitle.render(
             "Pick a version of Ken to challenge", True, _TEXT_SECONDARY
@@ -242,8 +281,8 @@ class OpponentSelectScreen(BaseScreen):
             card_h = max(304, round(316 * ui_s))
             gap = max(26, round(30 * ui_s))
 
-            self._header_knight_y = max(26, round(32 * ui_s))
-            self._header_title_y = self._header_knight_y + max(28, round(36 * ui_s))
+            self._header_knight_y = max(28, round(34 * ui_s))
+            self._header_title_y = self._header_knight_y + max(36, round(44 * ui_s))
             self._header_sub_y = self._header_title_y + max(26, round(32 * ui_s))
             cards_top = self._header_sub_y + max(34, round(40 * ui_s))
 
@@ -274,8 +313,11 @@ class OpponentSelectScreen(BaseScreen):
             avail_card_w = (self.width - margin_x * 2 - gap * 2) // 3
             card_w = max(180, min(max_card_w, avail_card_w))
 
-            self._header_knight_y = max(26, int(self.height * 0.068))
-            self._header_title_y = max(self._header_knight_y + 32, int(self.height * 0.132))
+            self._header_knight_y = max(28, int(self.height * 0.058))
+            self._header_title_y = max(
+                self._header_knight_y + max(42, round(48 * ui_s)),
+                int(self.height * 0.132),
+            )
             self._header_sub_y = self._header_title_y + max(30, round(38 * ui_s))
 
             back_h = max(42, round(48 * ui_s))
@@ -369,7 +411,11 @@ class OpponentSelectScreen(BaseScreen):
         if cache_key in cls._avatar_cache:
             return cls._avatar_cache[cache_key]
 
-        image = pygame.image.load(str(ASSETS_DIR / filename)).convert_alpha()
+        raw = cls._raw_avatar_cache.get(filename)
+        if raw is None:
+            raw = pygame.image.load(str(ASSETS_DIR / filename))
+            cls._raw_avatar_cache[filename] = raw
+        image = raw.convert_alpha()
         width, height = image.get_size()
         scale = max(size / max(1, width), size / max(1, height))
         scaled_size = (max(1, round(width * scale)), max(1, round(height * scale)))
@@ -386,17 +432,20 @@ class OpponentSelectScreen(BaseScreen):
         cls._avatar_cache[cache_key] = avatar
         return avatar
 
-    @staticmethod
+    @classmethod
     def _make_radial_glow(
-        radius: int, color: tuple[int, int, int], peak_alpha: int = 90
+        cls, radius: int, color: tuple[int, int, int], peak_alpha: int = 90
     ) -> pygame.Surface:
-        """Create a smooth Gaussian-like radial glow surface using NumPy."""
+        """Create a smooth Gaussian-like radial glow surface using NumPy (cached)."""
         radius = max(4, radius)
+        key = (radius, color, peak_alpha)
+        cached = cls._glow_cache.get(key)
+        if cached is not None:
+            return cached
+
         d = radius * 2
-        yy, xx = np.mgrid[0:d, 0:d]
-        dx = (xx - radius + 0.5) / radius
-        dy = (yy - radius + 0.5) / radius
-        dist2 = dx * dx + dy * dy
+        coords = (np.arange(d, dtype=np.float32) - radius + 0.5) / radius
+        dist2 = coords[:, None] ** 2 + coords[None, :] ** 2
         falloff = np.where(dist2 < 1.0, np.exp(-3.2 * dist2) * (1.0 - dist2), 0.0)
         alpha = np.clip(falloff * peak_alpha, 0, 255).astype(np.uint8)
 
@@ -409,13 +458,33 @@ class OpponentSelectScreen(BaseScreen):
         alpha_arr = pygame.surfarray.pixels_alpha(surf)
         alpha_arr[:, :] = alpha.T
         del alpha_arr
+        cls._glow_cache[key] = surf
         return surf
 
     def _load_knight_emblem(self, size: int) -> pygame.Surface:
-        """Load the existing white knight SVG tinted in emerald as the header crest."""
-        key = ("header_knight", size, _EMERALD_PRIMARY)
+        """Load the official ChessIQ 3D knight logo for the header crest (cached)."""
+        key = ("header_logo_3d", size, _EMERALD_PRIMARY)
         if key in self._icon_cache:
             return self._icon_cache[key]
+
+        logo_path = ICON_MASTER_PATH if ICON_MASTER_PATH.is_file() else LOGO_SOURCE_PATH
+        if logo_path.is_file():
+            # Reuse raw surface already cached by DashboardScreen when available
+            from screens.dashboard import DashboardScreen
+
+            raw = DashboardScreen._logo_raw_cache.get(logo_path)
+            if raw is None:
+                raw = pygame.image.load(str(logo_path))
+                if pygame.display.get_surface() is not None:
+                    raw = raw.convert_alpha()
+                DashboardScreen._logo_raw_cache[logo_path] = raw
+            src_w, src_h = raw.get_size()
+            ratio = min(size / max(1, src_w), size / max(1, src_h))
+            out_w = max(1, round(src_w * ratio))
+            out_h = max(1, round(src_h * ratio))
+            scaled = pygame.transform.smoothscale(raw, (out_w, out_h))
+            self._icon_cache[key] = scaled
+            return scaled
 
         svg_path = ASSETS_DIR / "wN.svg"
         if svg_path.is_file():
@@ -646,58 +715,69 @@ class OpponentSelectScreen(BaseScreen):
                 self._wrap_text_lines(desc_text, self._font_description, _TEXT_SECONDARY, max_txt_w)
             )
 
-            # 4. Card glass surface (subtle vertical glass sheen + top specular accent)
+            # 4 & 5. Card glass, shadow, and hover glow surfaces (cached by geometry + style)
             w, h = card.size
             rad = self._card_radius
-            glass = pygame.Surface((w, h), pygame.SRCALPHA)
-            # Subtle vertical dark-glass gradient
-            top_col = (24, 42, 50) if bot["recommended"] else (20, 34, 41)
-            bot_col = (12, 22, 27)
-            for y in range(h):
-                t = y / max(1, h - 1)
-                c = _lerp_rgb(top_col, bot_col, t)
-                pygame.draw.line(glass, (*c, 228), (0, y), (w - 1, y))
-            # Mask into rounded rect
-            mask = pygame.Surface((w, h), pygame.SRCALPHA)
-            pygame.draw.rect(mask, (255, 255, 255, 255), (0, 0, w, h), border_radius=rad)
-            glass.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
-            # Subtle top inner gloss line
-            gloss_inset = rad + 2
-            if w > gloss_inset * 2:
-                gloss_col = (*accent, 110) if bot["recommended"] else (241, 245, 249, 32)
-                pygame.draw.line(
-                    glass, gloss_col, (gloss_inset, 1), (w - gloss_inset, 1), width=1
-                )
+            is_rec = bool(bot["recommended"])
+            fx_key = (w, h, rad, accent, is_rec)
+            cached_fx = self._card_fx_cache.get(fx_key)
+            if cached_fx is not None:
+                glass, shadow, glow = cached_fx
+            else:
+                glass = pygame.Surface((w, h), pygame.SRCALPHA)
+                top_col = (24, 42, 50) if is_rec else (20, 34, 41)
+                bot_col = (12, 22, 27)
+                strip = pygame.Surface((1, h), pygame.SRCALPHA)
+                for y in range(h):
+                    c = _lerp_rgb(top_col, bot_col, y / max(1, h - 1))
+                    strip.set_at((0, y), (*c, 228))
+                glass.blit(pygame.transform.scale(strip, (w, h)), (0, 0))
+                mask = pygame.Surface((w, h), pygame.SRCALPHA)
+                pygame.draw.rect(mask, (255, 255, 255, 255), (0, 0, w, h), border_radius=rad)
+                glass.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+                gloss_inset = rad + 2
+                if w > gloss_inset * 2:
+                    gloss_col = (*accent, 110) if is_rec else (241, 245, 249, 32)
+                    pygame.draw.line(
+                        glass, gloss_col, (gloss_inset, 1), (w - gloss_inset, 1), width=1
+                    )
+
+                pad = 20
+                shadow = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
+                for spread, alpha in ((16, 16), (10, 28), (5, 48)):
+                    pygame.draw.rect(
+                        shadow,
+                        (0, 0, 0, alpha),
+                        (pad - spread, pad - spread + 7, w + spread * 2, h + spread * 2),
+                        border_radius=rad + spread,
+                    )
+
+                glow = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
+                for spread, alpha in ((14, 14), (8, 26), (3, 44)):
+                    pygame.draw.rect(
+                        glow,
+                        (*accent, alpha),
+                        (pad - spread, pad - spread, w + spread * 2, h + spread * 2),
+                        border_radius=rad + spread,
+                    )
+                self._card_fx_cache[fx_key] = (glass, shadow, glow)
+
             self._card_glass_surfs.append(glass)
-
-            # 5. Soft shadow + hover accent glow surface
-            pad = 20
-            shadow = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
-            for spread, alpha in ((16, 16), (10, 28), (5, 48)):
-                pygame.draw.rect(
-                    shadow,
-                    (0, 0, 0, alpha),
-                    (pad - spread, pad - spread + 7, w + spread * 2, h + spread * 2),
-                    border_radius=rad + spread,
-                )
             self._card_shadows.append(shadow)
-
-            glow = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
-            for spread, alpha in ((14, 14), (8, 26), (3, 44)):
-                pygame.draw.rect(
-                    glow,
-                    (*accent, alpha),
-                    (pad - spread, pad - spread, w + spread * 2, h + spread * 2),
-                    border_radius=rad + spread,
-                )
             self._card_hover_glows.append(glow)
 
     def _build_background(self) -> pygame.Surface:
-        """Build the atmospheric dark-emerald chess backdrop once using NumPy."""
+        """Build the atmospheric dark-emerald chess backdrop once (fast 1/4-res gradient + cached)."""
         w, h = self.width, self.height
-        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-        nx = xx / max(1.0, float(w))
-        ny = yy / max(1.0, float(h))
+        cached = self._bg_cache.get((w, h))
+        if cached is not None:
+            return cached
+
+        # Compute smooth low-frequency gradients/glows at 1/4 resolution (~16x faster, visually identical)
+        bw = max(64, w // 4)
+        bh = max(64, h // 4)
+        nx = np.linspace(0.0, 1.0, bw, dtype=np.float32)[None, :]
+        ny = np.linspace(0.0, 1.0, bh, dtype=np.float32)[:, None]
 
         # 1. Deep charcoal vertical gradient (#050B0D -> #0B1418 -> #050B0D)
         mid_curve = np.sin(ny * math.pi)
@@ -709,37 +789,52 @@ class OpponentSelectScreen(BaseScreen):
         dx_c = (nx - 0.50) * 1.45
         dy_c = (ny - 0.54) * 1.75
         radial = np.exp(-3.4 * (dx_c * dx_c + dy_c * dy_c))
-        r += _EMERALD_PRIMARY[0] * 0.085 * radial
-        g += _EMERALD_PRIMARY[1] * 0.085 * radial
-        b += _EMERALD_PRIMARY[2] * 0.085 * radial
+        r = r + _EMERALD_PRIMARY[0] * 0.085 * radial
+        g = g + _EMERALD_PRIMARY[1] * 0.085 * radial
+        b = b + _EMERALD_PRIMARY[2] * 0.085 * radial
 
         # 3. Subtle cool atmospheric edge light at top center
         dx_t = (nx - 0.50) * 2.0
         dy_t = (ny - 0.08) * 3.0
         top_glow = np.exp(-3.0 * (dx_t * dx_t + dy_t * dy_t))
-        r += _EMERALD_PRIMARY[0] * 0.045 * top_glow
-        g += _EMERALD_PRIMARY[1] * 0.045 * top_glow
-        b += _EMERALD_PRIMARY[2] * 0.045 * top_glow
+        r = r + _EMERALD_PRIMARY[0] * 0.045 * top_glow
+        g = g + _EMERALD_PRIMARY[1] * 0.045 * top_glow
+        b = b + _EMERALD_PRIMARY[2] * 0.045 * top_glow
 
-        # 4. Very faint chessboard pattern (softly masked to center/lower region)
-        sq_px = max(36.0, round(58.0 * max(0.75, self._scale)))
-        parity = (((xx // sq_px).astype(np.int32) + (yy // sq_px).astype(np.int32)) & 1).astype(np.float32)
-        board_mask = np.clip(1.0 - 1.55 * ((nx - 0.5) ** 2 + (ny - 0.58) ** 2), 0.0, 1.0)
-        checker = parity * board_mask * 6.5
-        r += checker * 0.45
-        g += checker * 1.10
-        b += checker * 0.90
-
-        # 5. Soft edge vignette
+        # 4. Soft edge vignette
         edge_d = (nx - 0.5) ** 2 + (ny - 0.5) ** 2
         vignette = np.clip(1.0 - 0.55 * edge_d, 0.65, 1.0)
         rgb = np.stack([r * vignette, g * vignette, b * vignette], axis=2)
         rgb_u8 = np.clip(rgb, 0, 255).astype(np.uint8)
 
-        bg = pygame.Surface((w, h))
-        arr = pygame.surfarray.pixels3d(bg)
+        small_bg = pygame.Surface((bw, bh))
+        arr = pygame.surfarray.pixels3d(small_bg)
         arr[:, :, :] = np.transpose(rgb_u8, (1, 0, 2))
         del arr
+        bg = pygame.transform.smoothscale(small_bg, (w, h))
+
+        # 5. Very faint chessboard pattern (drawn directly over the soft-masked region)
+        sq_px = max(36, int(round(58.0 * max(0.75, self._scale))))
+        board_layer = pygame.Surface((w, h), pygame.SRCALPHA)
+        cols = (w + sq_px - 1) // sq_px
+        rows = (h + sq_px - 1) // sq_px
+        for row in range(rows):
+            cy_n = (row * sq_px + sq_px * 0.5) / max(1.0, float(h))
+            dy_m = (cy_n - 0.58) ** 2
+            for col in range(cols):
+                if ((row + col) & 1) == 0:
+                    continue
+                cx_n = (col * sq_px + sq_px * 0.5) / max(1.0, float(w))
+                mask_v = 1.0 - 1.55 * ((cx_n - 0.5) ** 2 + dy_m)
+                if mask_v <= 0.02:
+                    continue
+                alpha = max(1, min(18, int(round(mask_v * 11.0))))
+                pygame.draw.rect(
+                    board_layer,
+                    (115, 255, 215, alpha),
+                    (col * sq_px, row * sq_px, sq_px, sq_px),
+                )
+        bg.blit(board_layer, (0, 0))
 
         # 6. Low-opacity chess piece silhouettes in the left & right atmospheric wings
         sil_size = max(120, min(280, round(240 * max(0.65, self._scale))))
@@ -764,9 +859,10 @@ class OpponentSelectScreen(BaseScreen):
 
         if pygame.display.get_surface() is not None:
             try:
-                return bg.convert()
+                bg = bg.convert()
             except pygame.error:
-                return bg
+                pass
+        self._bg_cache[(w, h)] = bg
         return bg
 
     @staticmethod

@@ -13,7 +13,15 @@ import sys
 import time
 import pygame
 
-from others.config import ASSETS_DIR, BOOK_DB_PATH, ENGINE_DIR, STYLE_PROFILE_PATH, get_stockfish_path
+from others.config import (
+    ASSETS_DIR,
+    BOOK_DB_PATH,
+    ENGINE_DIR,
+    ICON_MASTER_PATH,
+    LOGO_SOURCE_PATH,
+    STYLE_PROFILE_PATH,
+    get_stockfish_path,
+)
 from screens.dashboard import DashboardScreen
 from screens.game import GameScreen
 from screens.opponent_select import OpponentSelectScreen
@@ -51,6 +59,29 @@ def _enable_windows_dpi_awareness() -> None:
         ctypes.windll.user32.SetProcessDPIAware()
     except Exception:
         pass
+
+
+def _set_windows_app_user_model_id() -> None:
+    """Set a custom Windows AppUserModelID so the taskbar shows our icon."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("ChessIQ.ChessKen")
+    except Exception:
+        pass
+
+
+def _set_window_icon() -> None:
+    """Set the Pygame window/taskbar icon from the processed master before set_mode."""
+    icon_path = ICON_MASTER_PATH if ICON_MASTER_PATH.is_file() else LOGO_SOURCE_PATH
+    if not icon_path.is_file():
+        return
+    try:
+        raw = pygame.image.load(str(icon_path))
+        icon_surf = pygame.transform.smoothscale(raw, (64, 64))
+        pygame.display.set_icon(icon_surf)
+    except Exception as exc:
+        logger.warning("Could not set window icon from %s: %s", icon_path, exc)
 
 
 def _run_startup_self_check() -> list[str]:
@@ -268,7 +299,9 @@ class App:
 
     def __init__(self) -> None:
         _enable_windows_dpi_awareness()
+        _set_windows_app_user_model_id()
         pygame.init()
+        _set_window_icon()
 
         # full-screen display (uses physical pixels when DPI awareness is active)
         self.screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
@@ -287,6 +320,7 @@ class App:
         self._premove_enabled: bool = True
         self._selected_opponent: dict[str, object] | None = None
         self._settings_return_screen = "dashboard"
+        self._sync_menu_music("dashboard")
 
         # screen registry — maps names to factory callables
         self._screen_factories: dict[str, callable] = {
@@ -309,6 +343,8 @@ class App:
         }
 
         self._current_screen = self._screen_factories["dashboard"]()
+        # Pre-decode opponent portraits off the main thread while on the Dashboard
+        OpponentSelectScreen.preload_assets()
 
     # ------------------------------------------------------------------
     # Main loop
@@ -375,10 +411,29 @@ class App:
         factory = self._screen_factories.get(target)
         self._current_screen.close()
         if factory is not None:
+            resolved_target = target
             self._current_screen = factory()
         else:
             # unknown screen — fall back to dashboard
+            resolved_target = "dashboard"
             self._current_screen = self._screen_factories["dashboard"]()
+
+        self._sync_menu_music(resolved_target)
+
+    def _should_play_menu_music(self, screen_name: str) -> bool:
+        """Menu music plays on main menu screens and stops for time-control/match."""
+        if screen_name in ("dashboard", "opponent_select"):
+            return True
+        if screen_name == "settings":
+            return self._settings_return_screen != "game"
+        return False
+
+    def _sync_menu_music(self, screen_name: str) -> None:
+        """Start or fade out background menu music based on the active screen."""
+        if self._should_play_menu_music(screen_name):
+            self._sound_manager.start_music(fade_ms=600)
+        else:
+            self._sound_manager.stop_music(fade_ms=400)
 
     def _get_selected_opponent(self) -> dict[str, object]:
         if self._selected_opponent is None:
@@ -401,6 +456,7 @@ class App:
     def _shutdown(self) -> None:
         """Close the active screen (stopping any bot worker), then quit."""
         self._current_screen.close()
+        self._sound_manager.stop_music()
         pygame.quit()
         sys.exit()
 

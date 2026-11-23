@@ -12,9 +12,12 @@ from pathlib import Path
 import chess
 import pygame
 
-from others.config import SOUNDS_DIR
+from others.config import BG_MUSIC_PATH, SOUNDS_DIR
 
 logger = logging.getLogger(__name__)
+
+# Background music sits calmly beneath chess SFX so captures/checks stay crisp.
+DEFAULT_MUSIC_VOLUME_RATIO: float = 0.45
 
 SOUND_NAMES: tuple[str, ...] = (
     "game_start",
@@ -74,11 +77,16 @@ class SoundManager:
         *,
         volume: float = 0.7,
         muted: bool = False,
+        music_path: Path | None = None,
+        music_volume_ratio: float = DEFAULT_MUSIC_VOLUME_RATIO,
     ) -> None:
         self._sounds_dir: Path = sounds_dir if sounds_dir is not None else SOUNDS_DIR
+        self._music_path: Path = music_path if music_path is not None else BG_MUSIC_PATH
         self._volume: float = self._clamp_volume(volume)
+        self._music_volume_ratio: float = self._clamp_volume(music_volume_ratio)
         self._muted: bool = bool(muted)
         self._available: bool = False
+        self._music_playing: bool = False
         self._sounds: dict[str, pygame.mixer.Sound] = {}
 
         self._init_mixer()
@@ -131,18 +139,77 @@ class SoundManager:
         """Sorted tuple of pre-loaded sound cue names."""
         return tuple(sorted(self._sounds.keys()))
 
+    @property
+    def music_playing(self) -> bool:
+        """Whether background music playback is active and unmuted."""
+        return self._music_playing and not self._muted
+
+    def _effective_music_volume(self) -> float:
+        """Return the active mixer.music volume respecting mute and balance ratio."""
+        if self._muted:
+            return 0.0
+        return self._volume * self._music_volume_ratio
+
+    def _sync_music_volume(self) -> None:
+        """Apply current effective volume to pygame.mixer.music safely."""
+        if not self._available:
+            return
+        try:
+            pygame.mixer.music.set_volume(self._effective_music_volume())
+        except pygame.error:
+            pass
+
+    def start_music(self, *, loop: bool = True, fade_ms: int = 800) -> bool:
+        """Stream and loop the background music track without blocking.
+
+        Idempotent if music is already playing (avoids restarting mid-loop on
+        menu screen transitions). Degrades gracefully to a silent no-op if audio
+        is unavailable or the music file does not exist.
+        """
+        if not self._available or not self._music_path.is_file():
+            return False
+        if self._music_playing:
+            self._sync_music_volume()
+            return True
+        try:
+            pygame.mixer.music.load(str(self._music_path))
+            pygame.mixer.music.set_volume(self._effective_music_volume())
+            pygame.mixer.music.play(loops=-1 if loop else 0, fade_ms=max(0, int(fade_ms)))
+            self._music_playing = True
+            return True
+        except pygame.error as exc:
+            logger.warning("Failed to start background music %s: %s", self._music_path.name, exc)
+            self._music_playing = False
+            return False
+
+    def stop_music(self, fade_ms: int = 0) -> None:
+        """Stop or fade out background music playback safely."""
+        if not self._available:
+            self._music_playing = False
+            return
+        try:
+            if fade_ms > 0:
+                pygame.mixer.music.fadeout(int(fade_ms))
+            else:
+                pygame.mixer.music.stop()
+        except pygame.error:
+            pass
+        self._music_playing = False
+
     def set_volume(self, volume: float) -> None:
-        """Set playback volume in [0.0, 1.0] for all pre-loaded clips."""
+        """Set playback volume in [0.0, 1.0] for all pre-loaded clips and music."""
         self._volume = self._clamp_volume(volume)
         for sound in self._sounds.values():
             try:
                 sound.set_volume(self._volume)
             except pygame.error:
                 pass
+        self._sync_music_volume()
 
     def toggle_mute(self) -> bool:
-        """Toggle mute state and return the new muted value."""
+        """Toggle mute state for SFX and background music and return the new value."""
         self._muted = not self._muted
+        self._sync_music_volume()
         return self._muted
 
     def play(self, name: str) -> bool:

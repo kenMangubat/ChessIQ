@@ -9,8 +9,13 @@ import wave
 import chess
 import pygame
 
-from others.config import SOUNDS_DIR
-from ui.sound_manager import SOUND_NAMES, SoundManager, select_move_sound
+from others.config import BG_MUSIC_PATH, SOUNDS_DIR
+from ui.sound_manager import (
+    DEFAULT_MUSIC_VOLUME_RATIO,
+    SOUND_NAMES,
+    SoundManager,
+    select_move_sound,
+)
 
 
 def _apply(fen: str, uci: str) -> tuple[chess.Board, chess.Move, chess.Board]:
@@ -156,3 +161,110 @@ def test_extracted_wav_files_exist_and_castle_keeps_both_clacks() -> None:
         if name == "castle":
             # Double-clack castling cue is ~95 ms between clacks plus tail (>140 ms total)
             assert duration_ms >= 140.0, f"castle.wav appears split: {duration_ms:.1f} ms"
+
+
+# ── Background music tests ───────────────────────────────────────────
+
+
+def test_background_music_asset_exists() -> None:
+    """Generated looping background music file must exist and be non-empty."""
+    assert BG_MUSIC_PATH.is_file(), f"Missing background music: {BG_MUSIC_PATH}"
+    assert BG_MUSIC_PATH.stat().st_size > 10_000, "Background music file is unexpectedly small"
+
+
+def test_background_music_loop_volume_and_mute() -> None:
+    """SoundManager starts, scales, mutes, unmutes, and stops pygame.mixer.music cleanly."""
+    fake_sound = MagicMock()
+    with patch("pygame.mixer.get_init", return_value=(44100, -16, 2)), patch(
+        "pygame.mixer.Sound", return_value=fake_sound
+    ), patch("pygame.mixer.music.load") as mock_load, patch(
+        "pygame.mixer.music.play"
+    ) as mock_play, patch("pygame.mixer.music.set_volume") as mock_vol, patch(
+        "pygame.mixer.music.stop"
+    ) as mock_stop:
+        sm = SoundManager(SOUNDS_DIR, volume=0.8)
+        assert sm.start_music() is True
+        assert sm.music_playing is True
+        mock_load.assert_called_once_with(str(BG_MUSIC_PATH))
+        mock_play.assert_called_once_with(loops=-1, fade_ms=800)
+        assert abs(mock_vol.call_args[0][0] - 0.8 * DEFAULT_MUSIC_VOLUME_RATIO) < 1e-6
+
+        # Adjusting volume updates music proportionally beneath SFX
+        sm.set_volume(0.5)
+        assert abs(mock_vol.call_args[0][0] - 0.5 * DEFAULT_MUSIC_VOLUME_RATIO) < 1e-6
+
+        # Muting silences music immediately; unmuting restores volume
+        sm.toggle_mute()
+        assert sm.music_playing is False
+        assert mock_vol.call_args[0][0] == 0.0
+        sm.toggle_mute()
+        assert sm.music_playing is True
+        assert abs(mock_vol.call_args[0][0] - 0.5 * DEFAULT_MUSIC_VOLUME_RATIO) < 1e-6
+
+        sm.stop_music()
+        assert sm.music_playing is False
+        mock_stop.assert_called_once()
+
+
+def test_background_music_headless_fallback(tmp_path: Path) -> None:
+    """Background music degrades silently when audio device or file is absent."""
+    with patch("pygame.mixer.get_init", return_value=None), patch(
+        "pygame.mixer.init", side_effect=pygame.error("No audio device")
+    ):
+        sm = SoundManager(tmp_path, music_path=tmp_path / "missing.ogg")
+        assert sm.start_music() is False
+        assert sm.music_playing is False
+        sm.stop_music()
+
+
+def test_menu_music_stops_in_game_while_match_sfx_stay_active() -> None:
+    """Menu music stays seamless across menu screens, fades out on game/time-control, and preserves SFX."""
+    from main import App
+
+    fake_sound = MagicMock()
+    with patch("pygame.mixer.get_init", return_value=(44100, -16, 2)), patch(
+        "pygame.mixer.Sound", return_value=fake_sound
+    ), patch("pygame.mixer.music.load") as mock_load, patch(
+        "pygame.mixer.music.play"
+    ) as mock_play, patch("pygame.mixer.music.set_volume"), patch(
+        "pygame.mixer.music.fadeout"
+    ) as mock_fadeout:
+        sm = SoundManager(SOUNDS_DIR, volume=0.7)
+        app = App.__new__(App)
+        app._sound_manager = sm
+        app._settings_return_screen = "dashboard"
+
+        # Dashboard starts menu music
+        app._sync_menu_music("dashboard")
+        assert sm.music_playing is True
+        assert mock_load.call_count == 1
+        assert mock_play.call_count == 1
+
+        # Opponent select & menu-opened Settings keep menu music playing without restarting
+        app._sync_menu_music("opponent_select")
+        app._sync_menu_music("settings")
+        assert sm.music_playing is True
+        assert mock_load.call_count == 1
+        assert mock_play.call_count == 1
+
+        # Entering GameScreen (Time Control selection + match) fades out menu music
+        app._sync_menu_music("game")
+        assert sm.music_playing is False
+        mock_fadeout.assert_called_once_with(400)
+
+        # Chess match SFX (castle, check, capture, etc.) remain active while menu music is off
+        for cue in ("castle", "check", "capture", "move_self"):
+            assert sm.play(cue) is True
+        assert fake_sound.play.call_count == 4
+
+        # Settings opened from inside a match keeps menu music off
+        app._settings_return_screen = "game"
+        app._sync_menu_music("settings")
+        assert sm.music_playing is False
+
+        # Returning to dashboard resumes menu music smoothly
+        app._settings_return_screen = "dashboard"
+        app._sync_menu_music("dashboard")
+        assert sm.music_playing is True
+        assert mock_load.call_count == 2
+        assert mock_play.call_count == 2

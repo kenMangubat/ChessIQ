@@ -6,31 +6,39 @@ type stays large on a full-screen window.
 """
 
 import math
+from pathlib import Path
+import numpy as np
 import pygame
 
+from others.config import ICON_MASTER_PATH, LOGO_SOURCE_PATH
 from screens.base_screen import BaseScreen
 from ui.button import Button
 from ui.animated_board import AnimatedBoard
 
 
-# ── colour palette ──────────────────────────────────────────────────
-_BG_TOP = (12, 14, 18)
-_BG_BOT = (20, 24, 32)
-_TITLE_COLOR = (52, 211, 153)
-_SUBTITLE_COLOR = (196, 202, 214)
-_CARD = (24, 28, 36)
-_ACCENT = (16, 185, 129)
+# ── colour palette (deep charcoal + emerald & cyan accents) ─────────
+_BG_TOP = (9, 13, 17)
+_BG_BOT = (16, 22, 29)
+_TITLE_GRAD_LEFT = (0, 214, 160)       # #00D6A0 emerald
+_TITLE_GRAD_RIGHT = (54, 191, 255)     # #36BFFF cyan
+_TITLE_COLOR = _TITLE_GRAD_LEFT
+_SUBTITLE_COLOR = (176, 190, 206)
+_CARD = (15, 22, 28)
+_ACCENT = (0, 214, 160)
+_ACCENT_CYAN = (54, 191, 255)
 
-# button colours
-_BTN_PLAY_GRADIENT = ((34, 197, 94), (21, 128, 61))
-_BTN_PLAY_HOVER_GRADIENT = ((22, 163, 74), (22, 101, 52))
-_BTN_SETTINGS_GRADIENT = ((22, 101, 52), (20, 83, 45))
-_BTN_SETTINGS_HOVER_GRADIENT = ((21, 128, 61), (6, 78, 59))
-_BTN_EXIT_GRADIENT = ((20, 83, 45), (5, 46, 22))
-_BTN_EXIT_HOVER_GRADIENT = ((22, 101, 52), (20, 83, 45))
-_BTN_SHADOW = (34, 197, 94)
-_BTN_TEXT = (255, 255, 255)
+# button colours (harmonized emerald-teal gradients)
+_BTN_PLAY_GRADIENT = ((16, 198, 138), (5, 138, 108))
+_BTN_PLAY_HOVER_GRADIENT = ((34, 216, 158), (12, 164, 130))
+_BTN_SETTINGS_GRADIENT = ((21, 56, 60), (14, 38, 44))
+_BTN_SETTINGS_HOVER_GRADIENT = ((26, 76, 78), (16, 54, 60))
+_BTN_EXIT_GRADIENT = ((18, 34, 40), (12, 22, 28))
+_BTN_EXIT_HOVER_GRADIENT = ((24, 48, 56), (16, 34, 42))
+_BTN_SHADOW = (0, 180, 145)
+_BTN_TEXT = (244, 248, 252)
 _BUTTON_FONT_FAMILIES = (
+    "Plus Jakarta Sans",
+    "Manrope",
     "BlinkMacSystemFont",
     "-apple-system",
     "Segoe UI",
@@ -49,6 +57,9 @@ _BUTTON_FONT_FAMILIES = (
 class DashboardScreen(BaseScreen):
     """Main dashboard with PLAY / SETTINGS / EXIT."""
 
+    _logo_raw_cache: dict[Path, pygame.Surface] = {}
+    _logo_scaled_cache: dict[tuple[Path, int, int], pygame.Surface] = {}
+
     def __init__(self, screen: pygame.Surface) -> None:
         super().__init__(screen)
 
@@ -57,16 +68,18 @@ class DashboardScreen(BaseScreen):
         scale = min(self.width / 1280, self.height / 720)
         self._scale = scale
 
-        self._font_title = pygame.font.SysFont("Segoe UI", max(48, int(68 * scale)), bold=True)
-        self._font_sub = pygame.font.SysFont("Segoe UI", max(20, int(26 * scale)))
-        self._font_btn = self._make_button_font(max(17, int(16.8 * scale)))
+        self._font_title = self._load_modern_font(max(46, int(66 * scale)), "bold")
+        self._font_sub = self._load_modern_font(max(18, int(23 * scale)), "regular")
+        self._font_btn = self._make_button_font(max(17, int(17.5 * scale)))
         self._font_icon = pygame.font.SysFont("Segoe UI Symbol", max(36, int(52 * scale)))
-        self._font_ver = pygame.font.SysFont("Segoe UI", max(16, int(18 * scale)))
+        self._font_ver = self._load_modern_font(max(14, int(16 * scale)), "semibold")
 
-        self._title_surf = self._font_title.render("Chess Ken", True, _TITLE_COLOR)
+        self._title_surf = self._render_gradient_title("Chess Ken")
         self._sub_surf = self._font_sub.render("Can you beat me?", True, _SUBTITLE_COLOR)
-        self._icon_surf = self._font_icon.render("♔", True, _TITLE_COLOR)
-        self._ver_surf = self._font_ver.render("v0.1", True, (130, 138, 150))
+        self._logo_target_size = max(60, int(92 * scale))
+        self._icon_surf = self._load_logo_surface(self._logo_target_size)
+        self._icon_shadow = self._make_logo_shadow(self._icon_surf.get_size())
+        self._ver_surf = self._font_ver.render("v0.1", True, (130, 146, 160))
 
         self._bg = self._make_gradient(self.width, self.height, _BG_TOP, _BG_BOT)
         self._grid = self._make_grid_overlay(self.width, self.height, scale)
@@ -74,17 +87,17 @@ class DashboardScreen(BaseScreen):
 
         cx = self.width // 2
         btn_w = int(460 * scale)
-        btn_h = int(68 * scale)
-        btn_h_play = int(78 * scale)
-        gap = int(16 * scale)
+        btn_h = int(66 * scale)
+        btn_h_play = int(76 * scale)
+        gap = int(15 * scale)
         radius = int(14 * scale)
 
         icon_h = self._icon_surf.get_height()
         title_h = self._title_surf.get_height()
         sub_h = self._sub_surf.get_height()
-        block_gap = int(6 * scale)
+        block_gap = int(10 * scale)
         rule_gap = int(20 * scale)
-        after_sub = int(30 * scale)
+        after_sub = int(28 * scale)
 
         content_h = (
             icon_h + block_gap
@@ -95,7 +108,7 @@ class DashboardScreen(BaseScreen):
             + btn_h
         )
         pad_x = int(56 * scale)
-        pad_y = int(40 * scale)
+        pad_y = int(38 * scale)
         card_w = btn_w + pad_x * 2
         card_h = content_h + pad_y * 2
         self._card = pygame.Rect(0, 0, card_w, card_h)
@@ -115,8 +128,9 @@ class DashboardScreen(BaseScreen):
         self._title_pos = self._title_surf.get_rect(midtop=(cx, y))
 
         rule_y = self._title_pos.bottom + rule_gap // 2
-        rule_w = int(120 * scale)
+        rule_w = int(132 * scale)
         self._rule = ((cx - rule_w // 2, rule_y), (cx + rule_w // 2, rule_y))
+        self._rule_surf = self._make_gradient_rule(rule_w, max(2, int(3 * scale)))
 
         self._sub_pos = self._sub_surf.get_rect(midtop=(cx, self._title_pos.bottom + rule_gap))
         group_top = self._sub_pos.bottom + after_sub
@@ -141,7 +155,7 @@ class DashboardScreen(BaseScreen):
             text_color=_BTN_TEXT, border_radius=radius,
             gradient_colors=_BTN_PLAY_GRADIENT,
             hover_gradient_colors=_BTN_PLAY_HOVER_GRADIENT,
-            shadow_color=_BTN_SHADOW, border_color=(74, 222, 128),
+            shadow_color=_BTN_SHADOW, border_color=(82, 236, 206),
             lift_on_hover=True, press_feedback=True,
         )
         self._btn_settings = Button(
@@ -150,7 +164,7 @@ class DashboardScreen(BaseScreen):
             text_color=_BTN_TEXT, border_radius=radius,
             gradient_colors=_BTN_SETTINGS_GRADIENT,
             hover_gradient_colors=_BTN_SETTINGS_HOVER_GRADIENT,
-            shadow_color=_BTN_SHADOW, border_color=(34, 197, 94),
+            shadow_color=_BTN_SHADOW, border_color=(42, 134, 128),
             lift_on_hover=True, press_feedback=True,
         )
         self._btn_exit = Button(
@@ -159,7 +173,7 @@ class DashboardScreen(BaseScreen):
             text_color=_BTN_TEXT, border_radius=radius,
             gradient_colors=_BTN_EXIT_GRADIENT,
             hover_gradient_colors=_BTN_EXIT_HOVER_GRADIENT,
-            shadow_color=_BTN_SHADOW, border_color=(22, 101, 52),
+            shadow_color=_BTN_SHADOW, border_color=(46, 78, 88),
             lift_on_hover=True, press_feedback=True,
         )
         self._buttons = [self._btn_play, self._btn_settings, self._btn_exit]
@@ -286,10 +300,17 @@ class DashboardScreen(BaseScreen):
             )
 
         # 6. Menu typography & buttons
+        shadow_rect = self._icon_shadow.get_rect(
+            center=(self._icon_pos.centerx, self._icon_pos.centery + max(2, int(4 * self._scale)))
+        )
+        self.screen.blit(self._icon_shadow, shadow_rect)
         self.screen.blit(self._icon_surf, self._icon_pos)
         self.screen.blit(self._title_surf, self._title_pos)
 
-        pygame.draw.line(self.screen, _ACCENT, self._rule[0], self._rule[1], width=max(2, int(3 * self._scale)))
+        rule_rect = self._rule_surf.get_rect(
+            midleft=(self._rule[0][0], self._rule[0][1])
+        )
+        self.screen.blit(self._rule_surf, rule_rect)
         self.screen.blit(self._sub_surf, self._sub_pos)
 
         for btn in self._buttons:
@@ -310,6 +331,114 @@ class DashboardScreen(BaseScreen):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _load_logo_surface(self, target_size: int) -> pygame.Surface:
+        """Load the logo once and cache its aspect-preserved scaled surface."""
+        logo_path = ICON_MASTER_PATH if ICON_MASTER_PATH.is_file() else LOGO_SOURCE_PATH
+        if not logo_path.is_file():
+            return self._font_icon.render("♔", True, _TITLE_COLOR)
+
+        raw = self._logo_raw_cache.get(logo_path)
+        if raw is None:
+            loaded = pygame.image.load(str(logo_path))
+            if pygame.display.get_surface() is not None:
+                loaded = loaded.convert_alpha()
+            raw = loaded
+            self._logo_raw_cache[logo_path] = raw
+
+        src_w, src_h = raw.get_size()
+        ratio = min(target_size / max(src_w, 1), target_size / max(src_h, 1))
+        out_w = max(1, int(round(src_w * ratio)))
+        out_h = max(1, int(round(src_h * ratio)))
+
+        cache_key = (logo_path, out_w, out_h)
+        scaled = self._logo_scaled_cache.get(cache_key)
+        if scaled is None:
+            scaled = pygame.transform.smoothscale(raw, (out_w, out_h))
+            self._logo_scaled_cache[cache_key] = scaled
+        return scaled
+
+    @staticmethod
+    def _load_modern_font(size: int, weight: str = "regular") -> pygame.font.Font:
+        """Load Plus Jakarta Sans / Manrope / Segoe UI using genuine weight files."""
+        size = max(10, size)
+        if weight == "bold":
+            for family in ("Plus Jakarta Sans", "Manrope", "Segoe UI"):
+                path = pygame.font.match_font(family, bold=True)
+                if path:
+                    return pygame.font.Font(path, size)
+            return pygame.font.SysFont("Segoe UI", size, bold=True)
+
+        if weight == "semibold":
+            for family in ("Plus Jakarta Sans SemiBold", "Manrope SemiBold", "Segoe UI Semibold", "Segoe UI"):
+                path = pygame.font.match_font(family)
+                if path:
+                    return pygame.font.Font(path, size)
+            return pygame.font.SysFont("Segoe UI", size, bold=True)
+
+        for family in ("Plus Jakarta Sans", "Manrope", "Segoe UI"):
+            path = pygame.font.match_font(family)
+            if path:
+                if path.lower().endswith("segoeuil.ttf"):
+                    alt = Path(path).with_name("segoeui.ttf")
+                    if alt.is_file():
+                        return pygame.font.Font(str(alt), size)
+                return pygame.font.Font(path, size)
+        return pygame.font.SysFont("Segoe UI", size)
+
+    def _render_gradient_title(self, text: str) -> pygame.Surface:
+        """Render the menu title with a clean emerald-to-cyan gradient."""
+        raw = self._font_title.render(text, True, (255, 255, 255))
+        w, h = raw.get_size()
+        grad = pygame.Surface((w, h), pygame.SRCALPHA)
+        t = np.linspace(0.0, 1.0, max(1, w), dtype=np.float32)
+        c1 = np.array(_TITLE_GRAD_LEFT, dtype=np.float32)
+        c2 = np.array(_TITLE_GRAD_RIGHT, dtype=np.float32)
+        colors = (c1[None, :] * (1.0 - t[:, None]) + c2[None, :] * t[:, None]).astype(np.uint8)
+        rgb = pygame.surfarray.pixels3d(grad)
+        rgb[:, :, 0] = colors[:, 0:1]
+        rgb[:, :, 1] = colors[:, 1:2]
+        rgb[:, :, 2] = colors[:, 2:3]
+        del rgb
+        alpha = pygame.surfarray.pixels_alpha(grad)
+        alpha[:, :] = pygame.surfarray.array_alpha(raw)
+        del alpha
+        return grad
+
+    @staticmethod
+    def _make_gradient_rule(w: int, h: int) -> pygame.Surface:
+        """Create a subtle tapered emerald-to-cyan horizontal accent rule."""
+        w = max(8, w)
+        h = max(2, h)
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        for x in range(w):
+            t = x / max(w - 1, 1)
+            r = int(_ACCENT[0] + (_ACCENT_CYAN[0] - _ACCENT[0]) * t)
+            g = int(_ACCENT[1] + (_ACCENT_CYAN[1] - _ACCENT[1]) * t)
+            b = int(_ACCENT[2] + (_ACCENT_CYAN[2] - _ACCENT[2]) * t)
+            edge_fade = min(1.0, min(t, 1.0 - t) * 5.0)
+            a = int(215 * edge_fade)
+            pygame.draw.line(surf, (r, g, b, a), (x, 0), (x, h - 1))
+        return surf
+
+    @staticmethod
+    def _make_logo_shadow(icon_size: tuple[int, int]) -> pygame.Surface:
+        """Create a soft, grounded drop shadow under the 3D knight app icon."""
+        w, h = icon_size
+        pad = max(8, int(min(w, h) * 0.14))
+        surf = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
+        radius = max(8, int(min(w, h) * 0.24))
+        for step in range(4, 0, -1):
+            expand = step * max(1, pad // 4)
+            rect = pygame.Rect(
+                pad - expand // 2,
+                pad - expand // 2,
+                w + expand,
+                h + expand,
+            )
+            alpha = int(28 * (1.0 - (step - 1) / 4.0))
+            pygame.draw.rect(surf, (0, 0, 0, alpha), rect, border_radius=radius + expand // 3)
+        return surf
 
     @staticmethod
     def _make_button_font(size: int) -> pygame.font.Font:
@@ -350,37 +479,45 @@ class DashboardScreen(BaseScreen):
 
     @staticmethod
     def _make_glow(radius: int) -> pygame.Surface:
-        """Soft emerald glow cached once and pulsed with set_alpha."""
+        """Subtle emerald-cyan ambient glow cached once and pulsed with set_alpha."""
         surf = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
         for i in range(radius, 0, -4):
-            alpha = int(28 * (i / radius))
-            pygame.draw.circle(surf, (16, 185, 129, alpha), (radius, radius), i)
+            ratio = i / radius
+            alpha = int(14 * ratio)
+            r = int(_ACCENT[0] * (1.0 - ratio) + _ACCENT_CYAN[0] * ratio)
+            g = int(_ACCENT[1] * (1.0 - ratio) + _ACCENT_CYAN[1] * ratio)
+            b = int(_ACCENT[2] * (1.0 - ratio) + _ACCENT_CYAN[2] * ratio)
+            pygame.draw.circle(surf, (r, g, b, alpha), (radius, radius), i)
         return surf
 
     @staticmethod
     def _make_card(w: int, h: int, radius: int, pad: int = 8) -> pygame.Surface:
-        """Rounded semi-transparent panel with subtle emerald border and soft glow."""
+        """Rounded frosted deep-charcoal panel with refined emerald-cyan top highlight."""
         surf = pygame.Surface((w + pad * 2, h + pad * 2), pygame.SRCALPHA)
         inner = pygame.Rect(pad, pad, w, h)
 
-        # Soft green glow halo around the card
+        # Subtle ambient shadow halo around the card
         glow_rect = inner.inflate(pad, pad)
-        pygame.draw.rect(surf, (*_ACCENT, 22), glow_rect, border_radius=radius + 4)
+        pygame.draw.rect(surf, (0, 0, 0, 56), glow_rect, border_radius=radius + 4)
 
-        # A mostly opaque surface keeps the menu crisp over the animated board.
-        pygame.draw.rect(surf, (*_CARD, 232), inner, border_radius=radius)
+        # Deep charcoal frosted surface keeps logo & typography crisp over the board
+        pygame.draw.rect(surf, (*_CARD, 236), inner, border_radius=radius)
         pygame.draw.rect(
             surf,
-            (77, 88, 102, 220),
+            (68, 92, 108, 210),
             inner,
             width=1,
             border_radius=radius,
         )
-        pygame.draw.line(
-            surf,
-            (*_ACCENT, 120),
-            (inner.left + radius, inner.top + 1),
-            (inner.right - radius, inner.top + 1),
-            width=1,
-        )
+        # Subtle emerald-to-cyan top hairline accent
+        line_x0 = inner.left + radius
+        line_x1 = inner.right - radius
+        span = max(1, line_x1 - line_x0)
+        for x in range(line_x0, line_x1 + 1):
+            t = (x - line_x0) / span
+            r = int(_ACCENT[0] + (_ACCENT_CYAN[0] - _ACCENT[0]) * t)
+            g = int(_ACCENT[1] + (_ACCENT_CYAN[1] - _ACCENT[1]) * t)
+            b = int(_ACCENT[2] + (_ACCENT_CYAN[2] - _ACCENT[2]) * t)
+            edge_fade = min(1.0, min(t, 1.0 - t) * 4.0)
+            surf.set_at((x, inner.top + 1), (r, g, b, int(145 * edge_fade)))
         return surf

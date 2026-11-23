@@ -6,9 +6,23 @@ import shutil
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = BASE_DIR / "assets"
+ICONS_DIR = ASSETS_DIR / "icons"
 SOUNDS_DIR = ASSETS_DIR / "sounds"
+BG_MUSIC_PATH = SOUNDS_DIR / "bg_music.ogg"
 DATA_DIR = BASE_DIR / "data"
 ENGINE_DIR = BASE_DIR / "engine"
+
+# Logo & application icon paths
+# Checks assets/chesslogo.png first, falling back to assets/gamelogo.png.
+LOGO_SOURCE_PATH = (
+    ASSETS_DIR / "chesslogo.png"
+    if (ASSETS_DIR / "chesslogo.png").is_file()
+    else ASSETS_DIR / "gamelogo.png"
+)
+ICON_MASTER_PATH = ICONS_DIR / "chessken_master.png"
+# Future PyInstaller build: pass --icon=assets/icons/chessken.ico (ICON_ICO_PATH)
+ICON_ICO_PATH = ICONS_DIR / "chessken.ico"
+ICON_PREVIEW_PATH = ICONS_DIR / "preview_sizes.png"
 
 
 def get_stockfish_path() -> Path | None:
