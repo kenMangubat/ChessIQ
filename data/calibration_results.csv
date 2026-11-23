@@ -1,0 +1,4 @@
+profile,target_elo,estimated_elo,ci_95_low,ci_95_high,elo_delta,games_played,total_points,acpl,blunder_rate_per_100,total_blunders,total_bot_moves,book_moves,engine_moves,fallback_moves,fallback_rate_pct
+Sick Ken,1350,1458.4,1213.5,1703.4,108.4,18,3.5,52.1,6.4,50,781,54,727,0,0.0
+Focus Ken,1800,1754.2,1537.2,1971.1,-45.8,18,7.0,39.7,3.03,23,760,65,695,0,0.0
+Condition Ken,2350,2237.3,2010.0,2464.5,-112.7,18,13.5,27.4,1.63,11,676,51,625,0,0.0

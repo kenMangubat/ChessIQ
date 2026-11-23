@@ -1,0 +1,25 @@
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Executable binaries (>100MB limit on GitHub & OS-specific)
+*.exe
+engine/stockfish.exe
+
+# Retraining and DB backups
+*.bak_*
+data/*.bak_*
+
+# OS and Editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
