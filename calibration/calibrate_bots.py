@@ -24,7 +24,7 @@ from typing import Any
 import chess
 
 from bots.ken_bot import KEN_PROFILES, KenBot, get_profile
-from config import BOOK_DB_PATH, CALIBRATION_CSV_PATH, CALIBRATION_JSON_PATH
+from others.config import BOOK_DB_PATH, CALIBRATION_CSV_PATH, CALIBRATION_JSON_PATH
 from engine.stockfish_engine import StockfishEngine
 
 # ── Standard varied opening suites (0 to 4 plies) ───────────────────

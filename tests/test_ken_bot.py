@@ -18,7 +18,7 @@ from bots.ken_bot import (
 )
 from calibration.build_book import query_book_moves
 from calibration.calibrate_bots import estimate_elo_mle, play_calibration_game
-from config import BOOK_DB_PATH, get_stockfish_path
+from others.config import BOOK_DB_PATH, get_stockfish_path
 from engine.stockfish_engine import EngineNotFoundError, StockfishEngine
 
 

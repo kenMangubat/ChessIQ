@@ -22,7 +22,7 @@ from chess_logic.chess_game import (
     TimeControlPreset,
     format_clock_seconds,
 )
-from config import ASSETS_DIR
+from others.config import ASSETS_DIR
 from screens.base_screen import BaseScreen
 from ui.animated_board import (
     AnimatedBoard,
@@ -33,6 +33,7 @@ from ui.animated_board import (
 )
 from ui.button import Button
 from ui.hamburger_menu import HamburgerMenu, MATCH_ACTIONS
+from ui.sound_manager import SoundManager
 
 
 logger = logging.getLogger(__name__)
@@ -702,11 +703,15 @@ class GameScreen(BaseScreen):
         screen: pygame.Surface,
         opponent: dict[str, object],
         premove_enabled: bool = True,
+        sound_manager: SoundManager | None = None,
     ) -> None:
         super().__init__(screen)
         self._scale = min(self.width / 1280, self.height / 720)
         self._layout_scale = max(self._scale, min(self.height / 720, 1.2))
         self._premove_enabled = bool(premove_enabled)
+        self._sound_manager: SoundManager = (
+            sound_manager if sound_manager is not None else SoundManager()
+        )
         self._opponent_name = str(opponent["name"])
         self._opponent_elo = int(opponent["elo"])
         self._opponent_tagline = str(opponent["tagline"])
@@ -1599,6 +1604,11 @@ class GameScreen(BaseScreen):
 
     def handle_events(self, events: list[pygame.event.Event]) -> None:
         for event in events:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_m:
+                muted = self._sound_manager.toggle_mute()
+                self._show_notice("Sound muted" if muted else "Sound unmuted")
+                continue
+
             # When the Game Over modal is open (and menu closed), route clicks inside
             # the modal directly to the dialog so narrow-window close buttons stay usable.
             if (
@@ -1758,6 +1768,7 @@ class GameScreen(BaseScreen):
         flagged = self._clock.tick(dt, self._game.turn_color)
         if flagged is not None:
             self._game.timeout(flagged)
+            self._sound_manager.play("game_end")
             self._invalidate_pending_search()
             self._refresh_result()
 
@@ -1821,6 +1832,7 @@ class GameScreen(BaseScreen):
         self._notice_timer = 0.0
         self._chat_text = self._opponent_tagline
         self._sync_move_state(auto_scroll=True)
+        self._sound_manager.play("game_start")
 
     def _invalidate_pending_search(self) -> None:
         """Mark any in-flight bot search as stale; its result will be discarded."""
@@ -1950,6 +1962,7 @@ class GameScreen(BaseScreen):
             return
         assert self._game is not None
         self._game.resign("white" if self._player_color == chess.WHITE else "black")
+        self._sound_manager.play("game_end")
         self._invalidate_pending_search()
         self._refresh_result()
 
@@ -1959,6 +1972,7 @@ class GameScreen(BaseScreen):
         assert self._game is not None
         if self._game.can_claim_draw:
             self._game.agree_draw()
+            self._sound_manager.play("game_end")
             self._invalidate_pending_search()
             self._refresh_result()
         else:
@@ -2180,10 +2194,14 @@ class GameScreen(BaseScreen):
         duration_override: float | None = None,
     ) -> None:
         assert self._game is not None
+        board_before = self._game.board.copy(stack=False)
         info = self._game.make_move(from_sq, to_sq, promotion)
         if info is None:
             self._board.clear_selection()
             return
+        self._sound_manager.play_for_move(
+            board_before, info.move, self._game.board, is_player_move=True
+        )
         if self._game.is_game_over:
             self._clock.pause()
         else:
@@ -2287,6 +2305,7 @@ class GameScreen(BaseScreen):
     def _apply_bot_move(self, move: chess.Move | None) -> None:
         """Validate and apply the bot's move, falling back to the heuristic if needed."""
         assert self._game is not None
+        board_before = self._game.board.copy(stack=False)
         info = self._game.make_uci(move.uci()) if move is not None else None
         if info is None:
             logger.warning("Bot returned illegal move %r; using fallback heuristic.", move)
@@ -2295,6 +2314,9 @@ class GameScreen(BaseScreen):
             info = self._game.make_uci(fallback.uci())
         if info is None:
             return
+        self._sound_manager.play_for_move(
+            board_before, info.move, self._game.board, is_player_move=False
+        )
         if self._game.is_game_over:
             self._clock.pause()
         else:

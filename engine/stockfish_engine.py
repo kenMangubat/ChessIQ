@@ -17,7 +17,7 @@ from typing import Any
 import chess
 import chess.engine
 
-from config import ENGINE_DIR, get_stockfish_path
+from others.config import ENGINE_DIR, get_stockfish_path
 
 
 class EngineNotFoundError(FileNotFoundError):

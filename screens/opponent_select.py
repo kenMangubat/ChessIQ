@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pygame
 
-from config import ASSETS_DIR
+from others.config import ASSETS_DIR
 from screens.base_screen import BaseScreen
 from ui.animated_board import MAX_ANIMATION_DT, _load_svg_at_size
 from ui.button import Button

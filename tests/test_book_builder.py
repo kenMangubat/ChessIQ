@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import chess
 
-from config import BOOK_DB_PATH
+from others.config import BOOK_DB_PATH
 from calibration.build_book import (
     determine_tier,
     identify_ken_in_game,

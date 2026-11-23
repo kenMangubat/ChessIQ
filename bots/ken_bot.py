@@ -43,7 +43,7 @@ from calibration.style_analyzer import (
     load_style_profile,
     score_legal_moves_style,
 )
-from config import BOOK_DB_PATH, PROVENANCE_LOG_DIR, STYLE_PROFILE_PATH
+from others.config import BOOK_DB_PATH, PROVENANCE_LOG_DIR, STYLE_PROFILE_PATH
 from engine.stockfish_engine import EngineNotFoundError, StockfishEngine
 
 logger = logging.getLogger(__name__)

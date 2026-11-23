@@ -20,7 +20,7 @@ from typing import Any
 import chess
 import chess.pgn
 
-from config import BOOK_DB_PATH, DATA_DIR, PGN_FILES, STYLE_PROFILE_PATH
+from others.config import BOOK_DB_PATH, DATA_DIR, PGN_FILES, STYLE_PROFILE_PATH
 
 # ── Ken identification & source-weight constants ─────────────────────
 KEN_USERNAMES: frozenset[str] = frozenset(

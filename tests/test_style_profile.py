@@ -24,7 +24,7 @@ from calibration.style_analyzer import (
     DEFAULT_STYLE_PROFILE,
 )
 from calibration.build_book import query_book_moves, TIER_CONDITION, TIER_FOCUS, TIER_SICK
-from config import BOOK_DB_PATH, STYLE_PROFILE_PATH
+from others.config import BOOK_DB_PATH, STYLE_PROFILE_PATH
 from engine.stockfish_engine import StockfishEngine
 
 

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import pygame
 
-from config import ASSETS_DIR
+from others.config import ASSETS_DIR
 from screens.dashboard import DashboardScreen
 from ui.animated_board import AnimatedBoard, _PIECE_SVG_MAP, _load_svg_at_size
 

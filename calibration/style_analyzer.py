@@ -35,7 +35,7 @@ from calibration.build_book import (
     init_book_db,
     query_book_moves,
 )
-from config import BOOK_DB_PATH, PGN_FILES, STYLE_PROFILE_PATH
+from others.config import BOOK_DB_PATH, PGN_FILES, STYLE_PROFILE_PATH
 from engine.stockfish_engine import StockfishEngine
 
 logger = logging.getLogger(__name__)

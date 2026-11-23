@@ -3,7 +3,7 @@
 import numpy as np
 import pygame
 
-from config import ASSETS_DIR
+from others.config import ASSETS_DIR
 from ui.button import Button
 
 

@@ -20,7 +20,7 @@ from typing import Any
 import chess
 
 from bots.ken_bot import KenBot
-from config import BOOK_DB_PATH, PROVENANCE_LOG_DIR, STYLE_PROFILE_PATH
+from others.config import BOOK_DB_PATH, PROVENANCE_LOG_DIR, STYLE_PROFILE_PATH
 
 
 def format_decision(rec: dict[str, Any]) -> str:

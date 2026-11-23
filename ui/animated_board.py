@@ -22,7 +22,7 @@ import chess
 import pygame
 
 from chess_logic.chess_game import ChessGame, MoveInfo
-from config import ASSETS_DIR
+from others.config import ASSETS_DIR
 from ui.chess_rules import Position, START_FEN, LINES, PIECE_NAMES
 
 
