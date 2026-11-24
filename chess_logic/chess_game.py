@@ -94,6 +94,11 @@ class ChessGame:
         return self._board.fen()
 
     @property
+    def initial_fen(self) -> str:
+        """Starting FEN string of this game."""
+        return self._initial_fen
+
+    @property
     def turn(self) -> str:
         """Current player's turn ('white' or 'black')."""
         return "white" if self._board.turn == chess.WHITE else "black"

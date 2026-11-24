@@ -28,6 +28,7 @@ from ui.animated_board import (
     AnimatedBoard,
     MAX_ANIMATION_DT,
     PREMOVE_ANIMATION_DURATION,
+    _load_svg_at_size,
     ease_progress,
     get_bot_think_range,
 )
@@ -223,21 +224,43 @@ def _lerp_tc_rgb(
     )
 
 
+# ── Modern Chess.com-inspired Move Review palette (warm charcoal + emerald) ──
+REV_PANEL_BG = (36, 35, 33)             # #242321 move panel base
+REV_ROW_ALT = (46, 44, 42)              # #2E2C2A subtle alternating row
+REV_ROW_HOVER = (56, 54, 51)            # #383633 subtle move hover pill
+REV_SEL_BG = (33, 62, 52)               # rgba(16, 185, 129, 0.18) on warm charcoal
+REV_SEL_BORDER = (16, 185, 129)         # #10B981 emerald active border
+REV_BTN_BG = (52, 51, 49)               # #343331 nav button surface
+REV_BTN_HOVER = (64, 62, 59)            # #403E3B nav button hover
+REV_BTN_DISABLED = (41, 40, 38)         # #292826 disabled nav button
+REV_BTN_BORDER = (72, 70, 67)           # rgba(255, 255, 255, 0.10) warm border
+REV_BTN_SPECULAR = (68, 66, 63)         # subtle warm top highlight
+REV_PANEL_BORDER = (62, 60, 57)         # refined panel outline
+REV_TEXT_PRIMARY = (245, 245, 244)      # #F5F5F4 crisp notation text
+REV_TEXT_MUTED = (154, 148, 144)        # muted warm stone move numbers
+REV_ICON_DISABLED = (94, 90, 86)        # muted disabled nav icon
+REV_SCROLL_THUMB = (78, 75, 71)         # subtle warm scrollbar thumb
+
+
 def _load_tc_font(size: int, weight: str = "regular") -> pygame.font.Font:
-    """Load Manrope / Plus Jakarta Sans (with real-weight Segoe UI fallback)."""
+    """Load Inter / Manrope / Noto Sans / Plus Jakarta Sans (with real-weight Segoe UI fallback)."""
     size = max(10, size)
     if weight == "bold":
-        for family in ("Manrope", "Plus Jakarta Sans", "Segoe UI"):
+        for family in ("Inter", "Manrope", "Noto Sans", "Plus Jakarta Sans", "Segoe UI"):
             path = pygame.font.match_font(family, bold=True)
             if path:
                 return pygame.font.Font(path, size)
         return pygame.font.SysFont("Segoe UI", size, bold=True)
     if weight == "semibold":
         for family in (
+            "Inter SemiBold",
             "Manrope SemiBold",
+            "Noto Sans SemiBold",
             "Plus Jakarta Sans SemiBold",
             "Segoe UI Semibold",
+            "Inter",
             "Manrope",
+            "Noto Sans",
             "Plus Jakarta Sans",
             "Segoe UI",
         ):
@@ -245,7 +268,7 @@ def _load_tc_font(size: int, weight: str = "regular") -> pygame.font.Font:
             if path:
                 return pygame.font.Font(path, size)
         return pygame.font.SysFont("Segoe UI", size, bold=True)
-    for family in ("Manrope", "Plus Jakarta Sans", "Segoe UI"):
+    for family in ("Inter", "Manrope", "Noto Sans", "Plus Jakarta Sans", "Segoe UI"):
         path = pygame.font.match_font(family)
         if path:
             if path.lower().endswith("segoeuil.ttf"):
@@ -751,13 +774,16 @@ class GameScreen(BaseScreen):
         self._current_opening = "Starting Position"
         self._cached_material_diff: int = 0
         self._move_scroll_y = 0
+        self._review_ply: int | None = None
+        self._hovered_move_ply: int | None = None
         self._show_endgame_popup = False
         self._pending_endgame_popup = False
         self._popup_anim_elapsed: float = 0.0
         self._popup_card_surface: pygame.Surface | None = None
         self._popup_shadow_surface: pygame.Surface | None = None
         self._opponent_image: str = str(opponent["image"])
-        self._san_surface_cache: dict[tuple[str, bool], pygame.Surface] = {}
+        self._san_surface_cache: dict[tuple[str, bool, bool], pygame.Surface] = {}
+        self._review_icon_cache: dict[tuple[str, int, tuple[int, int, int]], pygame.Surface] = {}
         self._text_surface_cache: dict[
             tuple[int, str, tuple[int, int, int]], pygame.Surface
         ] = {}
@@ -803,9 +829,13 @@ class GameScreen(BaseScreen):
         self._font_small = pygame.font.SysFont(
             "Segoe UI", max(11, int(12 * self._scale)), bold=True
         )
-        self._font_moves = pygame.font.SysFont(
-            "Segoe UI", max(12, int(14 * self._scale)), bold=True
+        move_font_px = (
+            11 if (self._sidebar_rect.width - max(SPACE_SM, int(18 * self._scale)) * 2) < 200
+            else max(13, round(15 * self._scale))
         )
+        move_num_px = 10 if move_font_px <= 11 else max(11, round(13 * self._scale))
+        self._font_moves = _load_tc_font(move_font_px, "semibold")
+        self._font_move_num = _load_tc_font(move_num_px, "regular")
         self._font_symbol = pygame.font.SysFont(
             "Segoe UI Symbol", max(13, int(15 * self._scale))
         )
@@ -1316,16 +1346,38 @@ class GameScreen(BaseScreen):
             content_left, footer_top, content_width, footer_h
         )
 
+        # Compact Chess.com-inspired 4-button review navigation bar (|<  <  >  >|)
+        review_h = max(32, round(38 * self._scale))
+        review_gap = max(6, round(7 * self._scale))
+        review_top = footer_top - review_gap - review_h
+        self._review_bar_rect = pygame.Rect(
+            content_left, review_top, content_width, review_h
+        )
+        nav_keys = ("first", "prev", "next", "last")
+        nav_gap = max(5, round(7 * self._scale))
+        nav_w = max(24, (content_width - nav_gap * (len(nav_keys) - 1)) // len(nav_keys))
+        nav_total_w = nav_w * len(nav_keys) + nav_gap * (len(nav_keys) - 1)
+        nav_left = content_left + (content_width - nav_total_w) // 2
+        self._review_buttons: dict[str, Button] = {}
+        for idx, key in enumerate(nav_keys):
+            rect = pygame.Rect(
+                nav_left + idx * (nav_w + nav_gap),
+                review_top,
+                nav_w,
+                review_h,
+            )
+            self._review_buttons[key] = self._make_control_button(rect, color=REV_BTN_BG)
+
         moves_top = self._opening_rect.bottom + max(6, int(SPACE_XS * self._scale))
-        moves_bottom = footer_top - max(6, int(SPACE_XS * self._scale))
+        moves_bottom = review_top - review_gap
         self._moves_rect = pygame.Rect(
             content_left,
             moves_top,
             content_width,
             max(80, moves_bottom - moves_top),
         )
-        self._moves_pad_y = max(6, int(SPACE_XS * self._scale))
-        self._move_row_h = max(24, int(30 * self._scale))
+        self._moves_pad_y = max(5, round(6 * self._scale))
+        self._move_row_h = max(24, round(29 * self._scale))
 
         # Lower control button (Resign / New Game when match ends)
         self._btn_resign = self._make_control_button(
@@ -1725,6 +1777,7 @@ class GameScreen(BaseScreen):
                 self._btn_popup_rematch,
                 self._btn_popup_bots,
                 self._btn_popup_close,
+                *self._review_buttons.values(),
             ):
                 button.update(dt)
             self._board.update(dt)
@@ -1779,6 +1832,7 @@ class GameScreen(BaseScreen):
         return (
             self._board.promotion_pending
             or self._show_endgame_popup
+            or self.is_reviewing
             or self._board.premove is not None
             or self._board.premove_selected is not None
         )
@@ -1831,6 +1885,8 @@ class GameScreen(BaseScreen):
         self._notice_text = None
         self._notice_timer = 0.0
         self._chat_text = self._opponent_tagline
+        self._review_ply = None
+        self._hovered_move_ply = None
         self._menu.set_actions(MATCH_ACTIONS)
         self._sync_move_state(auto_scroll=True)
         self._sound_manager.play("game_start")
@@ -2015,24 +2071,49 @@ class GameScreen(BaseScreen):
         if self._handle_sidebar_match_event(event):
             return
 
-        if event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
-            if self._board.is_dragging:
-                self._board.cancel_drag()
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_LEFT:
+                self.step_review(-1)
                 return
-            if self._board.promotion_pending:
-                self._board.cancel_promotion()
+            if event.key == pygame.K_RIGHT:
+                self.step_review(1)
                 return
-            if self._board.premove is not None or self._board.premove_selected is not None:
-                self._board.clear_premove()
+            if event.key in (pygame.K_HOME, pygame.K_UP):
+                if self._game is not None and self._game.move_history:
+                    self.set_review_ply(-1)
                 return
+            if event.key in (pygame.K_END, pygame.K_DOWN):
+                self.exit_review()
+                return
+            if event.key == pygame.K_ESCAPE:
+                if self._board.is_dragging:
+                    self._board.cancel_drag()
+                    return
+                if self._board.promotion_pending:
+                    self._board.cancel_promotion()
+                    return
+                if self.is_reviewing:
+                    self.exit_review()
+                    return
+                if self._board.premove is not None or self._board.premove_selected is not None:
+                    self._board.clear_premove()
+                    return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
             self._board.cancel_drag()
+            if self._board.promotion_pending:
+                self._board.cancel_promotion()
             if self._board.premove is not None or self._board.premove_selected is not None:
                 self._board.clear_premove()
             return
 
         if event.type == pygame.MOUSEMOTION:
+            if self._board.promotion_pending:
+                local = self._screen_to_board(event.pos)
+                if local is not None:
+                    self._board.update_promotion_hover(local[0], local[1])
+                else:
+                    self._board._promotion_hover = None
             if self._board._drag_origin is not None:
                 local = self._screen_to_board(event.pos)
                 if local is not None:
@@ -2083,12 +2164,19 @@ class GameScreen(BaseScreen):
         if self._can_accept_premove():
             local = self._screen_to_board(event.pos)
             if local is None:
-                self._board.clear_premove()
+                if self._board.promotion_pending:
+                    self._board.cancel_promotion()
+                else:
+                    self._board.clear_premove()
                 return
             queued = self._board.handle_premove_click(
                 local[0], local[1], self._player_color
             )
-            if queued is None and self._board.premove_selected is not None:
+            if (
+                queued is None
+                and not self._board.promotion_pending
+                and self._board.premove_selected is not None
+            ):
                 self._board.begin_drag(
                     local[0], local[1], self._player_color, is_premove=True
                 )
@@ -2110,6 +2198,26 @@ class GameScreen(BaseScreen):
                     min(self._move_scroll_y + delta, self._max_move_scroll()),
                 )
                 return True
+        elif event.type == pygame.MOUSEMOTION:
+            self._hovered_move_ply = self._ply_at_pos(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            clicked_ply = self._ply_at_pos(event.pos)
+            if clicked_ply is not None:
+                self.set_review_ply(clicked_ply)
+                return True
+
+        for key, button in self._review_buttons.items():
+            if button.handle_event(event):
+                if key == "first":
+                    if self._game is not None and self._game.move_history:
+                        self.set_review_ply(-1)
+                elif key == "prev":
+                    self.step_review(-1)
+                elif key == "next":
+                    self.step_review(1)
+                elif key == "last":
+                    self.exit_review()
+                return True
 
         if self._btn_resign.handle_event(event):
             if self._game is not None and self._game.is_game_over:
@@ -2118,6 +2226,147 @@ class GameScreen(BaseScreen):
                 self._resign()
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Chess.com / Lichess-style Move History Review
+    # ------------------------------------------------------------------
+
+    @property
+    def is_reviewing(self) -> bool:
+        """True when inspecting an earlier historical position (not live latest)."""
+        return self._review_ply is not None
+
+    @property
+    def viewed_ply(self) -> int:
+        """Index of the currently displayed ply (`-1` = start, `0..N-1` = after ply k)."""
+        if self._game is None:
+            return -1
+        total = len(self._game.move_history)
+        if self._review_ply is None:
+            return total - 1
+        return max(-1, min(self._review_ply, total - 1))
+
+    def set_review_ply(self, ply: int | None, *, play_sound: bool = True) -> None:
+        """Jump the board display to historical ply *ply* (`-1` = start, `None` = live)."""
+        if self._game is None:
+            return
+        history = self._game.move_history
+        total = len(history)
+        if total == 0 or ply is None or ply >= total - 1:
+            changed = self._review_ply is not None
+            self._review_ply = None
+            self._board.set_review_position(None)
+            self._current_opening = identify_opening(self._game.san_moves)
+            if changed and total > 0:
+                self._scroll_ply_into_view(total - 1)
+                if play_sound:
+                    last_info = history[-1]
+                    self._sound_manager.play_for_move(
+                        chess.Board(last_info.fen_before),
+                        last_info.move,
+                        chess.Board(last_info.fen_after),
+                        is_player_move=True,
+                    )
+            return
+
+        clamped = max(-1, min(ply, total - 1))
+        if clamped == self._review_ply:
+            return
+        self._review_ply = clamped
+        if clamped < 0:
+            review_board = chess.Board(self._game.initial_fen)
+            review_move = None
+            self._current_opening = "Starting Position"
+            self._move_scroll_y = 0
+        else:
+            review_move = history[clamped]
+            review_board = chess.Board(review_move.fen_after)
+            self._current_opening = identify_opening(
+                self._game.san_moves[: clamped + 1]
+            )
+            self._scroll_ply_into_view(clamped)
+            if play_sound:
+                self._sound_manager.play_for_move(
+                    chess.Board(review_move.fen_before),
+                    review_move.move,
+                    review_board,
+                    is_player_move=True,
+                )
+        self._board.set_review_position(review_board, review_move)
+
+    def step_review(self, delta: int) -> None:
+        """Step backward (`delta < 0`) or forward (`delta > 0`) through move history."""
+        if self._game is None or not self._game.move_history:
+            return
+        target = self.viewed_ply + delta
+        total = len(self._game.move_history)
+        if target >= total - 1:
+            self.set_review_ply(None)
+        else:
+            self.set_review_ply(max(-1, target))
+
+    def exit_review(self) -> None:
+        """Return cleanly to the latest live game position."""
+        self.set_review_ply(None, play_sound=False)
+
+    def _scroll_ply_into_view(self, ply: int) -> None:
+        """Adjust `_move_scroll_y` so the row containing *ply* is fully visible."""
+        if ply < 0:
+            self._move_scroll_y = 0
+            return
+        pair_idx = ply // 2
+        row_top_content = self._moves_pad_y + pair_idx * self._move_row_h
+        row_bot_content = row_top_content + self._move_row_h
+        view_h = self._moves_rect.height
+        if row_top_content < self._move_scroll_y:
+            self._move_scroll_y = max(0, row_top_content - self._moves_pad_y)
+        elif row_bot_content > self._move_scroll_y + view_h:
+            self._move_scroll_y = row_bot_content - view_h + self._moves_pad_y
+        self._move_scroll_y = max(
+            0, min(self._move_scroll_y, self._max_move_scroll())
+        )
+
+    def _move_cell_rect(self, ply: int) -> pygame.Rect:
+        """Return screen-space rect of SAN move cell *ply* (shared by draw & click hit-test)."""
+        rect = self._moves_rect
+        compact = rect.width < 200
+        pad_x = 4 if compact else max(8, round(10 * self._scale))
+        num_w = 22 if compact else max(28, round(34 * self._scale))
+        col_gap = 2 if compact else max(6, round(8 * self._scale))
+        right_scroll_pad = 6 if compact else max(10, round(12 * self._scale))
+        avail_w = max(40, rect.width - pad_x - num_w - col_gap - right_scroll_pad)
+        col_w = avail_w // 2
+        white_x = rect.left + pad_x + num_w + (2 if compact else max(4, round(6 * self._scale)))
+        black_x = white_x + col_w + (col_gap // 2)
+        pair_idx = ply // 2
+        row_y = (
+            rect.top
+            + self._moves_pad_y
+            + pair_idx * self._move_row_h
+            - self._move_scroll_y
+        )
+        cell_x = white_x if (ply % 2 == 0) else black_x
+        return pygame.Rect(
+            cell_x,
+            row_y + 2,
+            max(20, col_w - (2 if compact else 4)),
+            self._move_row_h - 4,
+        )
+
+    def _ply_at_pos(self, pos: tuple[int, int]) -> int | None:
+        """Return the clickable ply index under screen coordinate *pos*, or None."""
+        if self._game is None or not self._moves_rect.inflate(-2, -2).collidepoint(pos):
+            return None
+        total = len(self._game.san_moves)
+        if total == 0:
+            return None
+        for ply in range(total):
+            cell = self._move_cell_rect(ply)
+            if cell.bottom < self._moves_rect.top or cell.top > self._moves_rect.bottom:
+                continue
+            if cell.collidepoint(pos):
+                return ply
+        return None
 
     def _screen_to_board(self, pos: tuple[int, int]) -> tuple[int, int] | None:
         """Convert screen coordinates to board-surface coordinates."""
@@ -2133,6 +2382,7 @@ class GameScreen(BaseScreen):
     def _can_accept_input(self) -> bool:
         return (
             self._is_game_active
+            and not self.is_reviewing
             and self._game is not None
             and self._game.turn_color == self._player_color
             and not self._board.is_animating
@@ -2142,6 +2392,7 @@ class GameScreen(BaseScreen):
     def _can_accept_premove(self) -> bool:
         if (
             not self._premove_enabled
+            or self.is_reviewing
             or not self._is_game_active
             or self._show_endgame_popup
             or self._game is None
@@ -2164,10 +2415,10 @@ class GameScreen(BaseScreen):
         ):
             return
 
-        # If the player selected a piece before the bot moved but hadn't clicked a destination yet,
-        # seamlessly promote it to a live selection so their next click plays immediately.
+        # If the player selected a piece or opened the premove promotion picker before the bot moved,
+        # seamlessly promote it to a live selection/picker so their next click plays immediately.
         if self._board.premove is None:
-            if self._board.premove_selected is not None:
+            if self._board.premove_selected is not None or self._board.promotion_pending:
                 self._board.promote_premove_selection(self._player_color)
             return
 
@@ -2196,6 +2447,8 @@ class GameScreen(BaseScreen):
         duration_override: float | None = None,
     ) -> None:
         assert self._game is not None
+        if self.is_reviewing:
+            self.exit_review()
         board_before = self._game.board.copy(stack=False)
         info = self._game.make_move(from_sq, to_sq, promotion)
         if info is None:
@@ -2307,6 +2560,8 @@ class GameScreen(BaseScreen):
     def _apply_bot_move(self, move: chess.Move | None) -> None:
         """Validate and apply the bot's move, falling back to the heuristic if needed."""
         assert self._game is not None
+        if self.is_reviewing:
+            self.exit_review()
         board_before = self._game.board.copy(stack=False)
         info = self._game.make_uci(move.uci()) if move is not None else None
         if info is None:
@@ -3211,8 +3466,11 @@ class GameScreen(BaseScreen):
             ),
         )
 
-        # 2. Scrollable two-column SAN move list
+        # 2. Scrollable two-column SAN move list (clickable to review any ply)
         self._draw_move_list()
+
+        # 2b. Compact Chess.com / Lichess move-review navigation bar (|<  <  >  >|)
+        self._draw_review_bar()
 
         # 3. Footer status / temporary notice
         if self._notice_text and self._notice_timer > 0:
@@ -3244,24 +3502,25 @@ class GameScreen(BaseScreen):
 
     def _draw_move_list(self) -> None:
         rect = self._moves_rect
-        radius = max(6, int(9 * self._scale))
-        pygame.draw.rect(self.screen, THEME_BG, rect, border_radius=radius)
-        pygame.draw.rect(self.screen, _BORDER, rect, width=1, border_radius=radius)
+        radius = max(8, round(10 * self._scale))
+        pygame.draw.rect(self.screen, REV_PANEL_BG, rect, border_radius=radius)
+        pygame.draw.rect(
+            self.screen, REV_PANEL_BORDER, rect, width=1, border_radius=radius
+        )
 
         san_moves = self._game.san_moves if self._game is not None else []
         if not san_moves:
             hint = self._get_cached_text(
-                self._font_body, "Make a move to start notation", _MUTED
+                self._font_move_num, "Make a move to start notation", REV_TEXT_MUTED
             )
             self.screen.blit(hint, hint.get_rect(center=rect.center))
             return
 
-        pad_x = max(8, int(12 * self._scale))
-        num_w = max(30, int(38 * self._scale))
-        col_w = (rect.width - pad_x * 2 - num_w - int(10 * self._scale)) // 2
-        white_x = rect.left + pad_x + num_w
-        black_x = white_x + col_w + int(4 * self._scale)
-        last_ply = len(san_moves) - 1
+        compact = rect.width < 200
+        pad_x = 4 if compact else max(8, round(10 * self._scale))
+        num_w = 22 if compact else max(28, round(34 * self._scale))
+        num_right = rect.left + pad_x + num_w - (2 if compact else max(4, round(6 * self._scale)))
+        active_ply = self.viewed_ply
 
         prev_clip = self.screen.get_clip()
         self.screen.set_clip(rect.inflate(-2, -2))
@@ -3278,39 +3537,43 @@ class GameScreen(BaseScreen):
                 continue
 
             row_rect = pygame.Rect(
-                rect.left + 2, row_y, rect.width - 4, self._move_row_h
+                rect.left + 1, row_y, rect.width - 2, self._move_row_h
             )
             if pair_idx % 2 == 1:
-                pygame.draw.rect(self.screen, _PANEL_ALT, row_rect)
+                pygame.draw.rect(self.screen, REV_ROW_ALT, row_rect)
 
             num_surf = self._get_cached_text(
-                self._font_moves, f"{pair_idx + 1}.", _MUTED
+                self._font_move_num, f"{pair_idx + 1}.", REV_TEXT_MUTED
             )
             self.screen.blit(
                 num_surf,
-                num_surf.get_rect(midleft=(rect.left + pad_x, row_rect.centery)),
+                num_surf.get_rect(midright=(num_right, row_rect.centery)),
             )
 
             w_ply = pair_idx * 2
             self._draw_san_cell(
                 san_moves[w_ply],
-                pygame.Rect(white_x, row_y + 2, col_w - 4, self._move_row_h - 4),
-                active=(w_ply == last_ply),
+                self._move_cell_rect(w_ply),
+                is_white=True,
+                active=(w_ply == active_ply),
+                hovered=(w_ply == self._hovered_move_ply),
             )
 
             b_ply = w_ply + 1
             if b_ply < len(san_moves):
                 self._draw_san_cell(
                     san_moves[b_ply],
-                    pygame.Rect(black_x, row_y + 2, col_w - 4, self._move_row_h - 4),
-                    active=(b_ply == last_ply),
+                    self._move_cell_rect(b_ply),
+                    is_white=False,
+                    active=(b_ply == active_ply),
+                    hovered=(b_ply == self._hovered_move_ply),
                 )
 
         self.screen.set_clip(prev_clip)
 
         max_scroll = self._max_move_scroll()
         if max_scroll > 0:
-            track_w = max(4, int(5 * self._scale))
+            track_w = max(4, round(4 * self._scale))
             track_rect = pygame.Rect(
                 rect.right - track_w - 4,
                 rect.top + 6,
@@ -3318,62 +3581,319 @@ class GameScreen(BaseScreen):
                 rect.height - 12,
             )
             total_h = total_pairs * self._move_row_h + self._moves_pad_y * 2
-            thumb_h = max(20, int(track_rect.height * (rect.height / total_h)))
+            thumb_h = max(22, int(track_rect.height * (rect.height / total_h)))
             ratio = self._move_scroll_y / max_scroll
             thumb_y = track_rect.top + int((track_rect.height - thumb_h) * ratio)
             pygame.draw.rect(
                 self.screen,
-                THEME_BORDER,
+                REV_SCROLL_THUMB,
                 (track_rect.left, thumb_y, track_w, thumb_h),
                 border_radius=track_w // 2,
             )
 
-    def _get_san_surface(self, san: str, active: bool) -> pygame.Surface:
-        key = (san, active)
+    @classmethod
+    def _load_notation_piece_icon(
+        cls,
+        piece_letter: str,
+        is_white: bool,
+        size: int,
+        color: tuple[int, int, int],
+    ) -> pygame.Surface | None:
+        """Render a crisp 3x-supersampled SVG piece figurine for move-list notation."""
+        key = (f"san_piece:{piece_letter}:{'w' if is_white else 'b'}:{color}", (size, size))
+        if key in cls._asset_cache:
+            return cls._asset_cache[key]
+
+        svg_name = f"{'w' if is_white else 'b'}{piece_letter.upper()}.svg"
+        svg_path = ASSETS_DIR / svg_name
+        if not svg_path.is_file():
+            return None
+
+        try:
+            hi = max(44, size * 3)
+            raw = _load_svg_at_size(svg_path, hi)
+            alpha = pygame.surfarray.array_alpha(raw).astype(np.float32)
+            rgb = pygame.surfarray.array3d(raw).astype(np.float32)
+            lum = 0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]
+
+            tinted = pygame.Surface(raw.get_size(), pygame.SRCALPHA)
+            dst_rgb = pygame.surfarray.pixels3d(tinted)
+            dst_a = pygame.surfarray.pixels_alpha(tinted)
+
+            if is_white:
+                # Chess.com white move figurine: solid crisp bright silhouette
+                dst_rgb[:, :, 0] = color[0]
+                dst_rgb[:, :, 1] = color[1]
+                dst_rgb[:, :, 2] = color[2]
+                dst_a[:, :] = np.clip(alpha, 0, 255).astype(np.uint8)
+            else:
+                # Chess.com black move figurine: crisp dark interior with clean bright outline/details
+                # White SVG highlights/details stay bright while body gets subtle warm charcoal tone
+                is_detail = lum > 110.0
+                body = (92, 88, 84)
+                edge = (224, 220, 214) if color == REV_TEXT_PRIMARY else (210, 245, 232)
+                dst_rgb[:, :, 0] = np.where(is_detail, edge[0], body[0])
+                dst_rgb[:, :, 1] = np.where(is_detail, edge[1], body[1])
+                dst_rgb[:, :, 2] = np.where(is_detail, edge[2], body[2])
+                # Add crisp outer rim so dark pieces pop sharply on #242321 / #2E2C2A
+                a_mask = alpha > 40.0
+                shifted = (
+                    np.roll(a_mask, 1, axis=0)
+                    & np.roll(a_mask, -1, axis=0)
+                    & np.roll(a_mask, 1, axis=1)
+                    & np.roll(a_mask, -1, axis=1)
+                    & np.roll(a_mask, 2, axis=0)
+                    & np.roll(a_mask, -2, axis=0)
+                    & np.roll(a_mask, 2, axis=1)
+                    & np.roll(a_mask, -2, axis=1)
+                )
+                is_rim = a_mask & (~shifted)
+                dst_rgb[:, :, 0] = np.where(is_rim, edge[0], dst_rgb[:, :, 0])
+                dst_rgb[:, :, 1] = np.where(is_rim, edge[1], dst_rgb[:, :, 1])
+                dst_rgb[:, :, 2] = np.where(is_rim, edge[2], dst_rgb[:, :, 2])
+                dst_a[:, :] = np.clip(alpha, 0, 255).astype(np.uint8)
+
+            del dst_rgb
+            del dst_a
+
+            bounds = tinted.get_bounding_rect(min_alpha=24)
+            if bounds.width > 0 and bounds.height > 0:
+                tinted = tinted.subsurface(bounds).copy()
+            bw, bh = tinted.get_size()
+            fit = size / max(1, max(bw, bh))
+            tw = max(1, round(bw * fit))
+            th = max(1, round(bh * fit))
+            icon = pygame.transform.smoothscale(tinted, (tw, th))
+            cls._asset_cache[key] = icon
+            return icon
+        except Exception:
+            return None
+
+    def _get_san_surface(
+        self, san: str, active: bool, is_white: bool = True
+    ) -> pygame.Surface:
+        """Render sharp, naturally kerned SAN with 3x-supersampled SVG piece figurines."""
+        key = (san, is_white, active)
         cached = self._san_surface_cache.get(key)
         if cached is not None:
             return cached
 
-        text_color = _PILL_TEXT if active else _TEXT
-        figurine = format_san_figurine(san)
-        glyphs = [
-            (
-                self._font_symbol
-                if ch in _PIECE_FIGURINES.values()
-                else self._font_moves
-            ).render(ch, True, text_color)
-            for ch in figurine
-        ]
-        width = max(1, sum(g.get_width() for g in glyphs))
-        height = max(
-            (g.get_height() for g in glyphs),
-            default=self._font_moves.get_linesize(),
-        )
-        surf = pygame.Surface((width, height), pygame.SRCALPHA)
+        text_color = (236, 253, 245) if active else REV_TEXT_PRIMARY
+        compact = self._moves_rect.width < 200
+        icon_size = 11 if compact else max(13, round(15 * self._scale))
+        icon_gap = 1 if compact else max(2, round(2.5 * self._scale))
+
+        # Split SAN into ordered parts: ("icon", piece_letter) or ("text", substring)
+        parts: list[tuple[str, str]] = []
+        rest = san
+        if rest and rest[0] in _PIECE_FIGURINES:
+            parts.append(("icon", rest[0]))
+            rest = rest[1:]
+        if "=" in rest:
+            head, tail = rest.split("=", 1)
+            if head:
+                parts.append(("text", head + "="))
+            else:
+                parts.append(("text", "="))
+            if tail and tail[0] in _PIECE_FIGURINES:
+                parts.append(("icon", tail[0]))
+                if len(tail) > 1:
+                    parts.append(("text", tail[1:]))
+            elif tail:
+                parts.append(("text", tail))
+        elif rest:
+            parts.append(("text", rest))
+
+        rendered: list[tuple[str, pygame.Surface]] = []
+        for kind, val in parts:
+            if kind == "icon":
+                icon = self._load_notation_piece_icon(val, is_white, icon_size, text_color)
+                if icon is not None:
+                    rendered.append(("icon", icon))
+                    continue
+                glyph = self._font_symbol.render(
+                    _PIECE_FIGURINES.get(val, val), True, text_color
+                )
+                rendered.append(("text", glyph))
+            else:
+                rendered.append(("text", self._font_moves.render(val, True, text_color)))
+
+        total_w = 0
+        max_h = self._font_moves.get_height()
+        for idx, (kind, s) in enumerate(rendered):
+            total_w += s.get_width()
+            if kind == "icon" and idx + 1 < len(rendered):
+                total_w += icon_gap
+            max_h = max(max_h, s.get_height())
+
+        surf = pygame.Surface((max(1, total_w), max(1, max_h)), pygame.SRCALPHA)
         x = 0
-        for g in glyphs:
-            surf.blit(g, (x, (height - g.get_height()) // 2))
-            x += g.get_width()
+        for idx, (kind, s) in enumerate(rendered):
+            # Align piece icons cleanly on the text visual baseline
+            y = (max_h - s.get_height()) // 2
+            if kind == "icon":
+                y = max(0, y - 1)
+            surf.blit(s, (x, y))
+            x += s.get_width()
+            if kind == "icon" and idx + 1 < len(rendered):
+                x += icon_gap
+
         self._san_surface_cache[key] = surf
         return surf
 
-    def _draw_san_cell(self, san: str, cell_rect: pygame.Rect, active: bool) -> None:
+    def _draw_san_cell(
+        self,
+        san: str,
+        cell_rect: pygame.Rect,
+        active: bool,
+        hovered: bool = False,
+        is_white: bool = True,
+    ) -> None:
+        pill_r = max(5, round(6 * self._scale))
+        pad_x = 3 if self._moves_rect.width < 200 else max(6, round(8 * self._scale))
+        text_surf = self._get_san_surface(san, active, is_white=is_white)
+
         if active:
-            pill_r = max(5, int(6 * self._scale))
-            pygame.draw.rect(self.screen, _ACTIVE_PILL, cell_rect, border_radius=pill_r)
+            # Subtle emerald pill highlight fitted cleanly to the cell
+            pygame.draw.rect(self.screen, REV_SEL_BG, cell_rect, border_radius=pill_r)
             pygame.draw.rect(
-                self.screen, _ACCENT, cell_rect, width=1, border_radius=pill_r
+                self.screen, REV_SEL_BORDER, cell_rect, width=1, border_radius=pill_r
             )
-        text_surf = self._get_san_surface(san, active)
-        self.screen.blit(
-            text_surf,
-            text_surf.get_rect(
-                midleft=(
-                    cell_rect.left + max(6, int(8 * self._scale)),
-                    cell_rect.centery,
+            # Crisp 2px emerald bottom accent bar (Chess.com active move cue)
+            bar_inset = max(4, pill_r)
+            if cell_rect.width > bar_inset * 2:
+                pygame.draw.line(
+                    self.screen,
+                    REV_SEL_BORDER,
+                    (cell_rect.left + bar_inset, cell_rect.bottom - 1),
+                    (cell_rect.right - bar_inset, cell_rect.bottom - 1),
+                    width=2,
                 )
-            ),
-        )
+        elif hovered:
+            pygame.draw.rect(
+                self.screen, REV_ROW_HOVER, cell_rect, border_radius=pill_r
+            )
+
+        max_w = max(1, cell_rect.width - pad_x * 2)
+        if text_surf.get_width() > max_w:
+            area = pygame.Rect(0, 0, max_w, text_surf.get_height())
+            self.screen.blit(
+                text_surf,
+                (cell_rect.left + pad_x, cell_rect.centery - text_surf.get_height() // 2),
+                area=area,
+            )
+        else:
+            self.screen.blit(
+                text_surf,
+                text_surf.get_rect(midleft=(cell_rect.left + pad_x, cell_rect.centery)),
+            )
+
+    def _draw_review_bar(self) -> None:
+        """Draw 4 modern Chess.com-inspired review controls (first, prev, next, last)."""
+        total = len(self._game.move_history) if self._game is not None else 0
+        viewed = self.viewed_ply
+        can_back = total > 0 and viewed >= 0
+        can_fwd = total > 0 and viewed < total - 1
+        enabled_map = {
+            "first": can_back,
+            "prev": can_back,
+            "next": can_fwd,
+            "last": can_fwd,
+        }
+        radius = max(7, round(9 * self._scale))
+        icon_sz = max(14, round(18 * self._scale))
+
+        for key, button in self._review_buttons.items():
+            enabled = enabled_map[key]
+            rect = button.base_rect
+            press_y = round(button._pressed_t) if enabled else 0
+            draw_rect = rect.move(0, press_y)
+
+            # Soft diffused warm drop shadow (no thick black outline)
+            if enabled:
+                sh = draw_rect.move(0, max(2, round(2 * self._scale)))
+                pygame.draw.rect(self.screen, (22, 21, 19), sh, border_radius=radius)
+
+            # Warm charcoal layered fill with smooth hover
+            if not enabled:
+                fill_col = REV_BTN_DISABLED
+                border_col = (52, 50, 48)
+            else:
+                fill_col = _lerp_tc_rgb(REV_BTN_BG, REV_BTN_HOVER, button._hover_t)
+                border_col = _lerp_tc_rgb(
+                    REV_BTN_BORDER, (96, 93, 88), button._hover_t
+                )
+
+            pygame.draw.rect(self.screen, fill_col, draw_rect, border_radius=radius)
+            if enabled and draw_rect.width > radius * 2 + 2:
+                spec_col = _lerp_tc_rgb(
+                    REV_BTN_SPECULAR, (88, 85, 80), button._hover_t
+                )
+                pygame.draw.line(
+                    self.screen,
+                    spec_col,
+                    (draw_rect.left + radius, draw_rect.top + 1),
+                    (draw_rect.right - radius, draw_rect.top + 1),
+                    width=1,
+                )
+            pygame.draw.rect(
+                self.screen,
+                border_col,
+                draw_rect,
+                width=1,
+                border_radius=radius,
+            )
+
+            icon_col = REV_TEXT_PRIMARY if enabled else REV_ICON_DISABLED
+            icon_surf = self._get_review_nav_icon(key, icon_sz, icon_col)
+            self.screen.blit(icon_surf, icon_surf.get_rect(center=draw_rect.center))
+
+    def _get_review_nav_icon(
+        self,
+        kind: str,
+        size: int,
+        color: tuple[int, int, int],
+    ) -> pygame.Surface:
+        """Render and cache a crisp 2x-supersampled modern review navigation icon."""
+        cache_key = (kind, size, color)
+        cached = self._review_icon_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        hi = max(32, size * 2)
+        surf = pygame.Surface((hi, hi), pygame.SRCALPHA)
+        cx, cy = hi // 2, hi // 2
+        stroke = max(4, round(hi * 0.13))
+        cap_r = max(2, stroke // 2)
+        h = int(hi * 0.34)
+        w = int(hi * 0.24)
+
+        def draw_rounded_chevron(tip_x: int, back_x: int) -> None:
+            pts = ((back_x, cy - h), (tip_x, cy), (back_x, cy + h))
+            pygame.draw.lines(surf, color, False, pts, stroke)
+            for px, py in pts:
+                pygame.draw.circle(surf, color, (px, py), cap_r)
+
+        if kind == "prev":
+            draw_rounded_chevron(cx - w // 2, cx + w)
+        elif kind == "next":
+            draw_rounded_chevron(cx + w // 2, cx - w)
+        elif kind == "first":
+            bar_x = cx - int(hi * 0.26)
+            pygame.draw.line(surf, color, (bar_x, cy - h), (bar_x, cy + h), stroke)
+            pygame.draw.circle(surf, color, (bar_x, cy - h), cap_r)
+            pygame.draw.circle(surf, color, (bar_x, cy + h), cap_r)
+            draw_rounded_chevron(bar_x + int(hi * 0.16), bar_x + int(hi * 0.44))
+        elif kind == "last":
+            bar_x = cx + int(hi * 0.26)
+            pygame.draw.line(surf, color, (bar_x, cy - h), (bar_x, cy + h), stroke)
+            pygame.draw.circle(surf, color, (bar_x, cy - h), cap_r)
+            pygame.draw.circle(surf, color, (bar_x, cy + h), cap_r)
+            draw_rounded_chevron(bar_x - int(hi * 0.16), bar_x - int(hi * 0.44))
+
+        final = pygame.transform.smoothscale(surf, (size, size))
+        self._review_icon_cache[cache_key] = final
+        return final
 
     # ------------------------------------------------------------------
     # Modern Game Over Dialog — fonts, icons, responsive layout & draw
@@ -4213,6 +4733,17 @@ class GameScreen(BaseScreen):
         pygame.draw.lines(surf, color, False, (p_left, p_mid, p_right), 2)
 
     def _status_text(self) -> str:
+        if self.is_reviewing and self._game is not None:
+            total = len(self._game.move_history)
+            if self._review_ply is not None and self._review_ply < 0:
+                prefix = "Starting position"
+            else:
+                move_num = (self.viewed_ply // 2) + 1
+                side = "White" if (self.viewed_ply % 2 == 0) else "Black"
+                prefix = f"Reviewing move {move_num} ({side})"
+            if self._result_text:
+                return f"{prefix}  •  {self._result_text}"
+            return f"{prefix} ({self.viewed_ply + 1}/{total})  •  → live"
         if self._result_text:
             return self._result_text
         if self._game is None:

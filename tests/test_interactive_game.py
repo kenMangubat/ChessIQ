@@ -1090,6 +1090,123 @@ def test_hamburger_menu_actions_after_game_over():
     screen.close()
 
 
+def test_move_review_arrow_keys_click_and_nav_bar():
+    """Verify Chess.com/Lichess move review via Left/Right/Home/End keys, move clicks, and nav buttons."""
+    screen, _ = _game_screen("White")
+    # Play 4 plies: 1. e4 e5 2. Nf3 Nc6
+    for idx, san in enumerate(("e4", "e5", "Nf3", "Nc6")):
+        mv = screen._game.board.parse_san(san)
+        if idx % 2 == 0:
+            screen._apply_player_move(mv.from_square, mv.to_square, None)
+        else:
+            screen._apply_bot_move(mv)
+        _finish_animation(screen)
+
+    live_fen = screen._game.fen
+    assert screen.is_reviewing is False
+    assert screen.viewed_ply == 3
+
+    # 1. Left arrow steps backward through history without mutating live ChessGame
+    screen.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_LEFT)])
+    assert screen.is_reviewing is True
+    assert screen.viewed_ply == 2
+    assert screen._board.is_reviewing is True
+    assert screen._board._review_board.fen() == screen._game.move_history[2].fen_after
+    assert screen._game.fen == live_fen
+    assert not screen._can_accept_input()
+    assert screen.captures_escape() is True
+    screen.draw()
+
+    # Step all the way back to starting position (-1) and clamp cleanly
+    for _ in range(5):
+        screen.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_LEFT)])
+    assert screen.viewed_ply == -1
+    assert screen._board._review_board.fen() == screen._game.initial_fen
+    assert screen._current_opening == "Starting Position"
+    screen.draw()
+
+    # 2. Right arrow steps forward to ply 0 (1. e4), then End returns to live
+    screen.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_RIGHT)])
+    assert screen.viewed_ply == 0
+    assert screen._board._review_board.fen() == screen._game.move_history[0].fen_after
+    screen.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_END)])
+    assert screen.is_reviewing is False
+    assert screen.viewed_ply == 3
+    assert screen._board.is_reviewing is False
+
+    # 3. Clicking a specific move cell in the move list jumps directly to that ply
+    cell_1 = screen._move_cell_rect(1)  # 1... e5
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=cell_1.center)]
+    )
+    assert screen.is_reviewing is True
+    assert screen.viewed_ply == 1
+    assert screen._board._review_board.fen() == screen._game.move_history[1].fen_after
+    screen.draw()
+
+    # 4. All 4 on-screen navigation buttons (first, prev, next, last) work identically
+    assert tuple(screen._review_buttons.keys()) == ("first", "prev", "next", "last")
+    assert "play" not in screen._review_buttons
+    # Equal widths and non-overlapping inside sidebar
+    nav_rects = [b.base_rect for b in screen._review_buttons.values()]
+    assert len({r.width for r in nav_rects}) == 1
+    assert len({r.height for r in nav_rects}) == 1
+    for i in range(len(nav_rects) - 1):
+        assert nav_rects[i].right < nav_rects[i + 1].left
+
+    screen.handle_events(
+        [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                button=1,
+                pos=screen._review_buttons["first"].base_rect.center,
+            )
+        ]
+    )
+    assert screen.viewed_ply == -1
+    screen.handle_events(
+        [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                button=1,
+                pos=screen._review_buttons["next"].base_rect.center,
+            )
+        ]
+    )
+    assert screen.viewed_ply == 0
+    screen.handle_events(
+        [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                button=1,
+                pos=screen._review_buttons["prev"].base_rect.center,
+            )
+        ]
+    )
+    assert screen.viewed_ply == -1
+    screen.handle_events(
+        [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN,
+                button=1,
+                pos=screen._review_buttons["last"].base_rect.center,
+            )
+        ]
+    )
+    assert screen.is_reviewing is False
+
+    # 5. Works after game ends (with popup dismissed)
+    screen._resign()
+    screen._show_endgame_popup = False
+    screen.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_LEFT)])
+    assert screen.is_reviewing is True
+    assert screen.viewed_ply == 2
+    screen.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE)])
+    assert screen.is_reviewing is False
+    screen.draw()
+    screen.close()
+
+
 def test_match_clock_countdown_increment_and_flag_fall():
     """Verify pure MatchClock countdown, increment, flag-fall, pause, and GameScreen clock integration."""
     # 1. Pure MatchClock unit checks
@@ -1560,12 +1677,105 @@ def test_opponent_select_screen_redesign():
         scr.draw()
 
 
+def test_user_chooses_promotion_piece_live_and_premove():
+    """Verify live drag, premove click, and premove drag always open Q/R/B/N picker instead of auto-queening."""
+    def _sq_screen_center(screen: GameScreen, sq: int) -> tuple[int, int]:
+        px, py = screen._board.square_to_pixel(sq)
+        half = screen._board._sq // 2
+        return (
+            screen._board_area.left + px + half,
+            screen._board_area.top + py + half,
+        )
+
+    def _promo_screen_center(screen: GameScreen, choice: str) -> tuple[int, int]:
+        rect = dict(screen._board.promotion_rects())[choice]
+        return (
+            screen._board_area.left + rect.centerx,
+            screen._board_area.top + rect.centery,
+        )
+
+    # 1. Live drag-and-drop promotion opens picker and promotes to chosen Rook (not Queen)
+    screen, _worker = _game_screen("White")
+    screen._game = ChessGame("8/P6k/8/8/8/8/8/K7 w - - 0 1")
+    screen._board.attach_game(screen._game, flipped=False)
+    a7 = _sq_screen_center(screen, chess.A7)
+    a8 = _sq_screen_center(screen, chess.A8)
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=a7)])
+    screen.handle_events([pygame.event.Event(pygame.MOUSEMOTION, pos=a8)])
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=a8)])
+    assert screen._board.promotion_pending is True
+    assert screen._game.piece_at(chess.A8) is None  # did NOT auto-promote to queen
+    r_pos = _promo_screen_center(screen, "r")
+    screen.handle_events([pygame.event.Event(pygame.MOUSEMOTION, pos=r_pos)])
+    assert screen._board._promotion_hover == "r"
+    screen.draw()
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=r_pos)])
+    assert screen._board.promotion_pending is False
+    assert screen._game.piece_at(chess.A8) == chess.Piece(chess.ROOK, chess.WHITE)
+    screen.close()
+
+    # 2. Premove click promotion opens picker during Black's turn and executes chosen Bishop
+    screen, worker = _game_screen("White")
+    screen._game = ChessGame("8/P6k/8/8/8/8/8/K7 b - - 0 1")
+    screen._board.attach_game(screen._game, flipped=False)
+    a7 = _sq_screen_center(screen, chess.A7)
+    a8 = _sq_screen_center(screen, chess.A8)
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=a7)])
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=a7)])
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=a8)])
+    assert screen._board.promotion_pending is True
+    assert screen._board.premove is None  # did NOT auto-queue queen premove
+    b_pos = _promo_screen_center(screen, "b")
+    screen.draw()
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=b_pos)])
+    assert screen._board.promotion_pending is False
+    assert screen._board.premove == (chess.A7, chess.A8, "b")
+
+    # Bot plays Kh8 -> premove fires and promotes to Bishop (NOT Queen)
+    worker.results.append(chess.Move.from_uci("h7h8"))
+    screen._update_bot(0.016)
+    screen._bot_wait_remaining = 0.0
+    _advance_bot_pacing(screen)
+    _finish_animation(screen)
+    assert screen._game.piece_at(chess.A8) == chess.Piece(chess.BISHOP, chess.WHITE)
+    screen.close()
+
+    # 3. Premove drag promotion opens picker; if bot replies while picker is open,
+    #    picker converts cleanly to live mode and user's Knight choice executes
+    screen, worker = _game_screen("White")
+    screen._game = ChessGame("8/P6k/8/8/8/8/8/K7 b - - 0 1")
+    screen._board.attach_game(screen._game, flipped=False)
+    a7 = _sq_screen_center(screen, chess.A7)
+    a8 = _sq_screen_center(screen, chess.A8)
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=a7)])
+    screen.handle_events([pygame.event.Event(pygame.MOUSEMOTION, pos=a8)])
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONUP, button=1, pos=a8)])
+    assert screen._board.promotion_pending is True
+    assert screen._board._promotion_is_premove is True
+
+    # Bot plays Kh8 while promotion picker is still open
+    worker.results.append(chess.Move.from_uci("h7h8"))
+    screen._update_bot(0.016)
+    screen._bot_wait_remaining = 0.0
+    _advance_bot_pacing(screen)
+    _finish_animation(screen)
+    assert screen._board.promotion_pending is True
+    assert screen._board._promotion_is_premove is False
+
+    n_pos = _promo_screen_center(screen, "n")
+    screen.handle_events([pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=n_pos)])
+    assert screen._board.promotion_pending is False
+    assert screen._game.piece_at(chess.A8) == chess.Piece(chess.KNIGHT, chess.WHITE)
+    screen.close()
+
+
 if __name__ == "__main__":
     test_orientation_round_trip()
     test_orientation_corners_and_off_board()
     test_selection_flow()
     test_capture_markers()
     test_promotion_flow_white_and_flipped_black()
+    test_user_chooses_promotion_piece_live_and_premove()
     test_animation_hides_destination_until_landed()
     test_animation_mathematics()
     test_animation_queue_captures_resize_and_flip()
@@ -1593,5 +1803,6 @@ if __name__ == "__main__":
     test_premove_settings_toggle_and_gameplay()
     test_hamburger_toggle_does_not_overlap_profile_bubble()
     test_hamburger_menu_actions_after_game_over()
+    test_move_review_arrow_keys_click_and_nav_bar()
     test_match_clock_countdown_increment_and_flag_fall()
     print("ALL INTERACTIVE GAME TESTS PASSED!")

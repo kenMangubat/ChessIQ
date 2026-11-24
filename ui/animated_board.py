@@ -335,6 +335,8 @@ class AnimatedBoard:
         self._legal_targets: list[int] = []
         self._capture_targets: set[int] = set()
         self._promotion: tuple[int, int] | None = None
+        self._promotion_is_premove: bool = False
+        self._promotion_hover: str | None = None
         self._hint_squares: tuple[int, int] | None = None
         self._premove_selected: int | None = None
         self._premove_targets: list[int] = []
@@ -345,6 +347,9 @@ class AnimatedBoard:
         self._drag_pos: tuple[int, int] = (0, 0)
         self._drag_active: bool = False
         self._drag_is_premove: bool = False
+        # Historical move review overlay (read-only snapshot; None = live board)
+        self._review_board: chess.Board | None = None
+        self._review_last_move: MoveInfo | None = None
         self._move_anim: MoveInfo | None = None
         self._move_anim_base_board: chess.Board | None = None
         self._move_anim_elapsed: float = 0.0
@@ -716,6 +721,23 @@ class AnimatedBoard:
         """True while the user is actively dragging a piece across the board."""
         return self._drag_active and self._drag_origin is not None
 
+    @property
+    def is_reviewing(self) -> bool:
+        """True when displaying a historical move-review board snapshot."""
+        return self._review_board is not None
+
+    def set_review_position(
+        self,
+        board: chess.Board | None,
+        last_move: MoveInfo | None = None,
+    ) -> None:
+        """Display a read-only historical position (or pass None to return to live)."""
+        self._review_board = board
+        self._review_last_move = last_move
+        if board is not None:
+            self.clear_selection()
+            self.cancel_drag()
+
     def cancel_drag(self) -> None:
         """Abort any in-progress piece drag cleanly."""
         self._drag_origin = None
@@ -727,6 +749,10 @@ class AnimatedBoard:
         self._premove = None
         self._premove_selected = None
         self._premove_targets = []
+        if self._promotion_is_premove:
+            self._promotion = None
+            self._promotion_is_premove = False
+            self._promotion_hover = None
         if self._drag_is_premove:
             self.cancel_drag()
 
@@ -737,8 +763,25 @@ class AnimatedBoard:
         return queued
 
     def promote_premove_selection(self, player_color: chess.Color) -> None:
-        """Convert an in-progress premove piece selection into a live selection on player's turn."""
-        if self._game is None or self._premove is not None or self._premove_selected is None:
+        """Convert an in-progress premove selection or promotion picker into live state."""
+        if self._game is None or self._premove is not None:
+            return
+        if self._promotion is not None and self._promotion_is_premove:
+            from_sq, to_sq = self._promotion
+            if self._game.is_promotion_move(from_sq, to_sq):
+                self._promotion_is_premove = False
+                self._premove_selected = None
+                self._premove_targets = []
+                self.select_square(from_sq)
+                self._promotion = (from_sq, to_sq)
+            else:
+                self._promotion = None
+                self._promotion_is_premove = False
+                self._promotion_hover = None
+                self._premove_selected = None
+                self._premove_targets = []
+            return
+        if self._premove_selected is None:
             return
         sq = self._premove_selected
         self._premove_selected = None
@@ -769,18 +812,25 @@ class AnimatedBoard:
         }
 
     def clear_selection(self) -> None:
-        """Deselect and close the promotion overlay."""
+        """Deselect and close any live promotion overlay."""
         self._selected = None
         self._legal_targets = []
         self._capture_targets = set()
-        self._promotion = None
+        if not self._promotion_is_premove:
+            self._promotion = None
+            self._promotion_hover = None
         self._hint_squares = None
 
     def clear_interaction(self) -> None:
-        """Reset selection, premove, drag, promotion overlay, and animations."""
+        """Reset selection, premove, drag, review snapshot, promotion overlay, and animations."""
+        self._promotion = None
+        self._promotion_is_premove = False
+        self._promotion_hover = None
         self.clear_selection()
         self.clear_premove()
         self.cancel_drag()
+        self._review_board = None
+        self._review_last_move = None
         self._move_anim = None
         self._move_anim_base_board = None
         self._move_anim_elapsed = 0.0
@@ -791,6 +841,15 @@ class AnimatedBoard:
     def cancel_promotion(self) -> None:
         """Close the promotion overlay, keeping the pawn selected."""
         self._promotion = None
+        self._promotion_is_premove = False
+        self._promotion_hover = None
+
+    def update_promotion_hover(self, x: int, y: int) -> None:
+        """Highlight whichever promotion piece tile is under board-surface `(x, y)`."""
+        if self._promotion is None:
+            self._promotion_hover = None
+            return
+        self._promotion_hover = self.promotion_choice_at(x, y)
 
     def animate_move(
         self, info: MoveInfo, duration_override: float | None = None
@@ -871,6 +930,8 @@ class AnimatedBoard:
             from_sq = self._selected
             if self._game.is_promotion_move(from_sq, square):
                 self._promotion = (from_sq, square)
+                self._promotion_is_premove = False
+                self._promotion_hover = None
                 return None
             self.clear_selection()
             return from_sq, square, None
@@ -887,11 +948,25 @@ class AnimatedBoard:
     ) -> tuple[int, int, str | None] | None:
         """Process a left click during the opponent's turn to queue or cancel a premove.
 
-        Returns `(from_square, to_square, promotion)` when a premove is queued,
-        otherwise None.
+        Opens the Q/R/B/N promotion picker whenever a pawn premoves to the back rank
+        so the user always chooses the promoted piece.
         """
         if self._game is None:
             return None
+
+        if self._promotion is not None and self._promotion_is_premove:
+            choice = self.promotion_choice_at(x, y)
+            if choice is None:
+                self.cancel_promotion()
+                return None
+            from_sq, to_sq = self._promotion
+            self._promotion = None
+            self._promotion_is_premove = False
+            self._promotion_hover = None
+            self._premove = (from_sq, to_sq, choice)
+            self._premove_selected = None
+            self._premove_targets = []
+            return self._premove
 
         square = self.pixel_to_square(x, y)
         if square is None:
@@ -901,12 +976,14 @@ class AnimatedBoard:
         if self._premove_selected is not None and square in self._premove_targets:
             from_sq = self._premove_selected
             piece = self._game.piece_at(from_sq)
-            promo: str | None = None
             if piece is not None and piece.piece_type == chess.PAWN:
                 promo_rank = 7 if player_color == chess.WHITE else 0
                 if chess.square_rank(square) == promo_rank:
-                    promo = "q"
-            self._premove = (from_sq, square, promo)
+                    self._promotion = (from_sq, square)
+                    self._promotion_is_premove = True
+                    self._promotion_hover = None
+                    return None
+            self._premove = (from_sq, square, None)
             self._premove_selected = None
             self._premove_targets = []
             return self._premove
@@ -986,6 +1063,8 @@ class AnimatedBoard:
                 if self._game.is_promotion_move(origin, drop_sq):
                     self._selected = origin
                     self._promotion = (origin, drop_sq)
+                    self._promotion_is_premove = False
+                    self._promotion_hover = None
                     return "promotion", None
                 self.clear_selection()
                 return "move", (origin, drop_sq, None)
@@ -995,12 +1074,15 @@ class AnimatedBoard:
             targets = premove_targets_from(self._game.board, origin, player_color)
             if drop_sq in targets:
                 piece = self._game.piece_at(origin)
-                promo: str | None = None
                 if piece is not None and piece.piece_type == chess.PAWN:
                     promo_rank = 7 if player_color == chess.WHITE else 0
                     if chess.square_rank(drop_sq) == promo_rank:
-                        promo = "q"
-                self._premove = (origin, drop_sq, promo)
+                        self._premove_selected = origin
+                        self._promotion = (origin, drop_sq)
+                        self._promotion_is_premove = True
+                        self._promotion_hover = None
+                        return "promotion", None
+                self._premove = (origin, drop_sq, None)
                 self._premove_selected = None
                 self._premove_targets = []
                 return "premove", self._premove
@@ -1185,6 +1267,29 @@ class AnimatedBoard:
         assert game is not None
         surface.blit(self._board_surf, self.board_rect.topleft)
 
+        # Read-only historical review mode (Chess.com / Lichess move inspection)
+        if self._review_board is not None:
+            if self._review_last_move is not None:
+                surface.blit(
+                    self._hl_surf,
+                    self.square_to_pixel(self._review_last_move.from_square),
+                )
+                surface.blit(
+                    self._hl_surf,
+                    self.square_to_pixel(self._review_last_move.to_square),
+                )
+            if self._review_board.is_check():
+                king_sq = self._review_board.king(self._review_board.turn)
+                if king_sq is not None:
+                    surface.blit(self._check_surf, self.square_to_pixel(king_sq))
+            for square in chess.SQUARES:
+                piece = self._review_board.piece_at(square)
+                if piece is not None:
+                    self._blit_piece_centered(
+                        surface, piece.symbol(), self._square_center(square)
+                    )
+            return
+
         # Highlight matches active animating move so queued moves never flash prematurely
         active_hl = self._move_anim if self._move_anim is not None else game.last_move
         if active_hl is not None:
@@ -1310,10 +1415,22 @@ class AnimatedBoard:
         surface.blit(self._promo_dim_surf, (self._ox, self._oy))
         pawn = self._game.piece_at(self._promotion[0])
         white = pawn is None or pawn.color == chess.WHITE
-        radius = max(4, int(self._sq * 0.12))
+        radius = max(5, int(self._sq * 0.12))
         for choice, rect in self.promotion_rects():
-            pygame.draw.rect(surface, _PROMO_TILE, rect, border_radius=radius)
-            pygame.draw.rect(surface, _PROMO_TILE_BORDER, rect, width=2, border_radius=radius)
+            hovered = choice == self._promotion_hover
+            tile_bg = (224, 248, 238) if hovered else _PROMO_TILE
+            tile_border = (16, 185, 129) if hovered else _PROMO_TILE_BORDER
+            pygame.draw.rect(
+                surface, (18, 17, 15), rect.move(0, 2), border_radius=radius
+            )
+            pygame.draw.rect(surface, tile_bg, rect, border_radius=radius)
+            pygame.draw.rect(
+                surface,
+                tile_border,
+                rect,
+                width=3 if hovered else 2,
+                border_radius=radius,
+            )
             symbol = choice.upper() if white else choice
             self._blit_piece_centered(surface, symbol, rect.center)
 
