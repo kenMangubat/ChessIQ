@@ -45,6 +45,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if not exist "engine\stockfish.exe" (
+    echo Stockfish engine not found. Running automatic Stockfish setup ...
+    ".venv\Scripts\python.exe" -m others.setup_stockfish
+    if errorlevel 1 (
+        echo [WARNING] Stockfish could not be installed automatically.
+        echo Follow the manual / USB instructions above, or press any key to launch anyway.
+        pause
+    )
+)
+
 echo Launching Chess Ken ...
 ".venv\Scripts\python.exe" main.py
 if errorlevel 1 (

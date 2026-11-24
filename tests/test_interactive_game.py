@@ -1024,6 +1024,72 @@ def test_hamburger_toggle_does_not_overlap_profile_bubble():
         screen.close()
 
 
+def test_hamburger_menu_actions_after_game_over():
+    """Hamburger menu hides Resign/Offer Draw once game ends, showing only Resume/Restart/Quit."""
+    screen, _ = _game_screen("White")
+    # Active match includes Resign and Offer Draw
+    assert "resign" in screen._menu.actions
+    assert "offer_draw" in screen._menu.actions
+
+    # End game by resignation -> only Resume, Restart, Quit remain
+    screen._resign()
+    assert screen._game.is_game_over
+    assert screen._menu.actions == ("resume", "restart", "opponent_select")
+    assert "resign" not in screen._menu.actions
+    assert "offer_draw" not in screen._menu.actions
+
+    # Open menu and draw cleanly
+    screen._show_endgame_popup = False
+    screen.handle_events(
+        [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, button=1, pos=screen._menu.toggle_rect.center
+            )
+        ]
+    )
+    assert screen._menu.is_open is True
+    screen.draw()
+
+    # Clicking Restart starts a fresh game and restores active match actions
+    restart_btn = dict(screen._menu._items)["restart"]
+    screen.handle_events(
+        [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, button=1, pos=restart_btn.base_rect.center
+            )
+        ]
+    )
+    assert not screen._game.is_game_over
+    assert "resign" in screen._menu.actions
+    assert "offer_draw" in screen._menu.actions
+
+    # Checkmate also switches menu to Resume / Restart / Quit
+    screen._apply_player_move(chess.F2, chess.F3, None)
+    _finish_animation(screen)
+    screen._apply_bot_move(chess.Move.from_uci("e7e5"))
+    _finish_animation(screen)
+    screen._apply_player_move(chess.G2, chess.G4, None)
+    _finish_animation(screen)
+    screen._apply_bot_move(chess.Move.from_uci("d8h4"))
+    _finish_animation(screen)
+    assert screen._game.is_checkmate
+    assert screen._menu.actions == ("resume", "restart", "opponent_select")
+
+    # Clicking Quit navigates to opponent_select
+    screen._show_endgame_popup = False
+    screen._menu.toggle()
+    quit_btn = dict(screen._menu._items)["opponent_select"]
+    screen.handle_events(
+        [
+            pygame.event.Event(
+                pygame.MOUSEBUTTONDOWN, button=1, pos=quit_btn.base_rect.center
+            )
+        ]
+    )
+    assert screen.next_screen == "opponent_select"
+    screen.close()
+
+
 def test_match_clock_countdown_increment_and_flag_fall():
     """Verify pure MatchClock countdown, increment, flag-fall, pause, and GameScreen clock integration."""
     # 1. Pure MatchClock unit checks
@@ -1525,5 +1591,7 @@ if __name__ == "__main__":
     test_time_control_modern_spacing_animation_and_responsiveness()
     test_speech_bubble_entrance_dynamic_text_and_reduced_motion()
     test_premove_settings_toggle_and_gameplay()
+    test_hamburger_toggle_does_not_overlap_profile_bubble()
+    test_hamburger_menu_actions_after_game_over()
     test_match_clock_countdown_increment_and_flag_fall()
     print("ALL INTERACTIVE GAME TESTS PASSED!")

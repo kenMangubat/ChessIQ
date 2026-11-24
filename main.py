@@ -146,7 +146,7 @@ def _run_startup_self_check() -> list[str]:
             ENGINE_DIR,
         )
         warnings.append(
-            f"Stockfish engine not found! Place 'stockfish.exe' in '{ENGINE_DIR.name}/' (bots will not use Stockfish)."
+            f"Stockfish engine missing! Run others\\run_game.bat or copy 'stockfish.exe' into '{ENGINE_DIR.name}/' by USB (fallback bot active without it)."
         )
     else:
         logger.info("Stockfish OK (%s)", stockfish_path)

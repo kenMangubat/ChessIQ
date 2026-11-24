@@ -32,7 +32,7 @@ from ui.animated_board import (
     get_bot_think_range,
 )
 from ui.button import Button
-from ui.hamburger_menu import HamburgerMenu, MATCH_ACTIONS
+from ui.hamburger_menu import ENDED_MATCH_ACTIONS, HamburgerMenu, MATCH_ACTIONS
 from ui.sound_manager import SoundManager
 
 
@@ -1831,6 +1831,7 @@ class GameScreen(BaseScreen):
         self._notice_text = None
         self._notice_timer = 0.0
         self._chat_text = self._opponent_tagline
+        self._menu.set_actions(MATCH_ACTIONS)
         self._sync_move_state(auto_scroll=True)
         self._sound_manager.play("game_start")
 
@@ -1902,6 +1903,7 @@ class GameScreen(BaseScreen):
                 self._open_endgame_popup()
             self._board.clear_selection()
             self._board.clear_premove()
+            self._menu.set_actions(ENDED_MATCH_ACTIONS)
             self._chat_text = self._endgame_chat_line(self._game.outcome)
 
     def _describe_outcome(self, outcome: GameOutcome) -> str:

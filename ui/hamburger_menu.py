@@ -33,6 +33,9 @@ MATCH_ACTIONS = (
     ("Exit", "dashboard"),
 )
 
+# Post-game menu (after the match has ended): only Resume, Restart, and Quit.
+ENDED_MATCH_ACTIONS = _ACTIONS
+
 
 class HamburgerMenu:
     """Toggle and render a screen-corner dropdown menu."""
@@ -89,6 +92,7 @@ class HamburgerMenu:
     ) -> None:
         self.is_open = False
         self._scale = scale
+        self._height = height
         self._font = pygame.font.SysFont(
             "Segoe UI", max(15, int(17 * scale)), bold=True
         )
@@ -97,6 +101,7 @@ class HamburgerMenu:
         )
 
         margin = max(_MIN_TOGGLE_MARGIN, int(_TOGGLE_MARGIN * scale))
+        self._margin = margin
         toggle_size = max(_MIN_TOGGLE_SIZE, int(_TOGGLE_SIZE * scale))
         toggle_top = margin
         if toggle_bottom_limit is not None:
@@ -120,25 +125,48 @@ class HamburgerMenu:
             border_radius=max(8, int(10 * scale)),
         )
 
+        self._actions: tuple[tuple[str, str], ...] = ()
+        self._panel = pygame.Rect(0, 0, 0, 0)
+        self._item_icons: dict[str, pygame.Surface] = {}
+        self._item_labels: dict[str, pygame.Surface] = {}
+        self._items: list[tuple[str, Button]] = []
+        self.set_actions(actions)
+
+    @property
+    def actions(self) -> tuple[str, ...]:
+        """Return the ordered action keys currently shown in the dropdown."""
+        return tuple(action for action, _ in self._items)
+
+    def set_actions(self, actions: tuple[tuple[str, str], ...]) -> None:
+        """Replace the menu items and resize the dropdown panel cleanly."""
+        actions_tuple = tuple(actions)
+        if actions_tuple == self._actions and self._items:
+            return
+        self._actions = actions_tuple
+        scale = self._scale
+        toggle_rect = self._toggle.base_rect
         panel_width = max(220, int(270 * scale))
         padding = max(6, int(8 * scale))
         item_height = max(36, int(44 * scale))
         item_gap = max(3, int(5 * scale))
+        count = len(actions_tuple)
         panel_height = (
-            padding * 2 + len(actions) * item_height + (len(actions) - 1) * item_gap
+            padding * 2
+            + count * item_height
+            + max(0, count - 1) * item_gap
         )
         panel_left = toggle_rect.right - panel_width
         panel_top = toggle_rect.bottom + max(5, int(8 * scale))
-        if panel_top + panel_height > height - margin:
-            panel_top = max(margin, height - margin - panel_height)
+        if panel_top + panel_height > self._height - self._margin:
+            panel_top = max(self._margin, self._height - self._margin - panel_height)
         self._panel = pygame.Rect(panel_left, panel_top, panel_width, panel_height)
 
         item_width = panel_width - padding * 2
         icon_size = max(15, int(18 * scale))
-        self._item_icons: dict[str, pygame.Surface] = {}
-        self._item_labels: dict[str, pygame.Surface] = {}
-        self._items: list[tuple[str, Button]] = []
-        for index, (label, action) in enumerate(actions):
+        self._item_icons = {}
+        self._item_labels = {}
+        self._items = []
+        for index, (label, action) in enumerate(actions_tuple):
             rect = pygame.Rect(
                 panel_left + padding,
                 panel_top + padding + index * (item_height + item_gap),
