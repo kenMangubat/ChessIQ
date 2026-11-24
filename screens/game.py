@@ -1331,7 +1331,22 @@ class GameScreen(BaseScreen):
         self._refresh_choice_styles()
 
         # ── gameplay sidebar layout ───────────────────────────────────
-        opening_top = int(150 * self._layout_scale)
+        thinking_pad_y = max(3, int(4 * self._scale))
+        thinking_text_h = self._font_small.size("thinking...")[1]
+        thinking_pill_h = thinking_text_h + thinking_pad_y * 2
+        thinking_pill_gap = max(6, int(7 * self._scale))
+        self._sidebar_thinking_top = self._avatar_rect.bottom + thinking_pill_gap
+        self._sidebar_thinking_bottom = self._sidebar_thinking_top + thinking_pill_h
+
+        opening_gap = max(8, int(10 * self._scale))
+        profile_zone_bottom = max(
+            self._sidebar_thinking_bottom,
+            self._tagline_rect.bottom,
+        )
+        opening_top = max(
+            int(150 * self._layout_scale),
+            profile_zone_bottom + opening_gap,
+        )
         opening_h = max(30, int(36 * self._scale))
         self._opening_rect = pygame.Rect(
             content_left, opening_top, content_width, opening_h
@@ -2747,7 +2762,7 @@ class GameScreen(BaseScreen):
         )
         self.screen.blit(text_surf, text_surf.get_rect(center=badge_rect.center))
 
-    def _draw_thinking_pill(self, midleft: tuple[int, int]) -> None:
+    def _draw_thinking_pill(self, midleft: tuple[int, int]) -> pygame.Rect:
         dots = "." * ((pygame.time.get_ticks() // 350) % 3 + 1)
         surf = self._get_cached_text(self._font_small, f"thinking{dots}", _ACCENT)
         pad_x = max(7, int(8 * self._scale))
@@ -2769,6 +2784,7 @@ class GameScreen(BaseScreen):
             border_radius=max(6, int(8 * self._scale)),
         )
         self.screen.blit(surf, surf.get_rect(center=pill.center))
+        return pill
 
     def _draw_profile(self) -> None:
         if self._game_started:
@@ -2797,7 +2813,10 @@ class GameScreen(BaseScreen):
             self.screen.blit(self._flag_image, self._flag_rect)
         elif self._bot_thinking:
             self._draw_thinking_pill(
-                (self._avatar_rect.left, self._avatar_rect.bottom + max(8, int(10 * self._scale)))
+                (
+                    self._avatar_rect.left,
+                    (self._sidebar_thinking_top + self._sidebar_thinking_bottom) // 2,
+                )
             )
 
         bubble_msg = self._chat_text if self._game_started else self._opponent_tagline

@@ -347,6 +347,16 @@ def test_board_backed_by_chess_game_and_bars_layout():
         assert screen._btn_board_settings.base_rect.right == board_rect.right
         assert screen._btn_board_settings.base_rect.bottom <= board_rect.top
         assert screen._opening_rect.top > screen._tagline_rect.bottom
+        assert screen._sidebar_thinking_top > screen._avatar_rect.bottom
+        assert screen._opening_rect.top > screen._sidebar_thinking_bottom
+        drawn_pill = screen._draw_thinking_pill(
+            (
+                screen._avatar_rect.left,
+                (screen._sidebar_thinking_top + screen._sidebar_thinking_bottom) // 2,
+            )
+        )
+        assert not drawn_pill.colliderect(screen._avatar_rect)
+        assert not drawn_pill.colliderect(screen._opening_rect)
         assert screen._moves_rect.top > screen._opening_rect.bottom
         assert screen._moves_rect.bottom < screen._footer_rect.top
         assert screen._footer_rect.bottom < screen._btn_resign.base_rect.top
