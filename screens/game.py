@@ -22,7 +22,7 @@ from chess_logic.chess_game import (
     TimeControlPreset,
     format_clock_seconds,
 )
-from others.config import ASSETS_DIR
+from others.config import ASSETS_DIR, OPENINGS_TSV_PATH
 from screens.base_screen import BaseScreen
 from ui.animated_board import (
     AnimatedBoard,
@@ -447,260 +447,128 @@ _PIECE_FIGURINES: dict[str, str] = {
     "N": "♘",
 }
 
-_OPENING_BOOK_LINES: dict[tuple[str, ...], str] = {
-    # 1-ply
-    ("e4",): "King's Pawn Game",
-    ("d4",): "Queen's Pawn Game",
-    ("c4",): "English Opening",
-    ("Nf3",): "Réti Opening",
-    ("f4",): "Bird's Opening",
-    ("b3",): "Nimzo-Larsen Attack",
-    ("g3",): "King's Fianchetto Opening",
-    ("Nc3",): "Dunst Opening",
-    ("b4",): "Polish Opening",
-    # Pirc & Modern
-    ("e4", "d6"): "Pirc Defense",
-    ("e4", "d6", "d4"): "Pirc Defense",
-    ("e4", "d6", "d4", "Nf6"): "Pirc Defense: Main Line",
-    ("e4", "d6", "d4", "Nf6", "Nc3"): "Pirc Defense: Main Line",
-    ("e4", "d6", "d4", "Nf6", "Nc3", "g6"): "Pirc Defense: Main Line",
-    ("e4", "d6", "d4", "Nf6", "Nc3", "g6", "Bc4"): "Pirc Defense: Main Line, Kholmov System",
-    ("e4", "d6", "d4", "Nf6", "Nc3", "g6", "Be3"): "Pirc Defense: Main Line, 150 Attack",
-    ("e4", "d6", "d4", "Nf6", "Nc3", "g6", "f4"): "Pirc Defense: Austrian Attack",
-    ("e4", "d6", "d4", "Nf6", "Nc3", "g6", "Nf3"): "Pirc Defense: Classical Variation",
-    ("e4", "d6", "d4", "Nf6", "Nc3", "g6", "Be2"): "Pirc Defense: Classical Variation",
-    ("e4", "g6"): "Modern Defense",
-    ("e4", "g6", "d4", "Bg7"): "Modern Defense: Standard Line",
-    ("e4", "g6", "d4", "Bg7", "Nc3", "d6"): "Modern Defense: Standard Line",
-    # Sicilian Defense
-    ("e4", "c5"): "Sicilian Defense",
-    ("e4", "c5", "d4"): "Sicilian Defense: Smith-Morra Gambit",
-    ("e4", "c5", "d4", "cxd4"): "Sicilian Defense: Smith-Morra Gambit",
-    ("e4", "c5", "d4", "cxd4", "c3"): "Sicilian Defense: Smith-Morra Gambit",
-    ("e4", "c5", "d4", "cxd4", "c3", "dxc3"): "Sicilian Defense: Smith-Morra Gambit, Accepted",
-    ("e4", "c5", "d4", "cxd4", "c3", "dxc3", "Nxc3"): "Sicilian Defense: Smith-Morra Gambit, Accepted",
-    ("e4", "c5", "d4", "cxd4", "c3", "Nf6"): "Sicilian Defense: Smith-Morra Gambit, Chicago Defense",
-    ("e4", "c5", "d4", "cxd4", "c3", "d6"): "Sicilian Defense: Smith-Morra Gambit, Declined",
-    ("e4", "c5", "d4", "cxd4", "c3", "d5"): "Sicilian Defense: Smith-Morra Gambit, Alapin Formation",
-    ("e4", "c5", "d4", "cxd4", "Qxd4"): "Sicilian Defense: Chekhover Variation",
-    ("e4", "c5", "d4", "cxd4", "Nf3"): "Sicilian Defense: Morra-transposed Open",
-    ("e4", "c5", "Nf3"): "Sicilian Defense: Open",
-    ("e4", "c5", "Nf3", "d6"): "Sicilian Defense: Open",
-    ("e4", "c5", "Nf3", "d6", "d4"): "Sicilian Defense: Open",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4"): "Sicilian Defense: Open",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4"): "Sicilian Defense: Open",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6"): "Sicilian Defense: Open, Main Line",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3"): "Sicilian Defense: Open, Main Line",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"): "Sicilian Defense: Najdorf Variation",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Bg5"): "Sicilian Defense: Najdorf, Bg5 Line",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be3"): "Sicilian Defense: Najdorf, English Attack",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be2"): "Sicilian Defense: Najdorf, Classical",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Bc4"): "Sicilian Defense: Najdorf, Fischer-Sozin Attack",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "g6"): "Sicilian Defense: Dragon Variation",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "g6", "Be3"): "Sicilian Defense: Dragon, Yugoslav Attack",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "e6"): "Sicilian Defense: Scheveningen Variation",
-    ("e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "Nc6"): "Sicilian Defense: Classical Variation",
-    ("e4", "c5", "Nf3", "d6", "Bb5"): "Sicilian Defense: Canal-Sokolsky Attack",
-    ("e4", "c5", "Nf3", "Nc6"): "Sicilian Defense: Old Sicilian",
-    ("e4", "c5", "Nf3", "Nc6", "Bb5"): "Sicilian Defense: Rossolimo Variation",
-    ("e4", "c5", "Nf3", "Nc6", "d4", "cxd4", "Nxd4"): "Sicilian Defense: Open",
-    ("e4", "c5", "Nf3", "Nc6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "e5"): "Sicilian Defense: Sveshnikov Variation",
-    ("e4", "c5", "Nf3", "Nc6", "d4", "cxd4", "Nxd4", "e5"): "Sicilian Defense: Kalashnikov Variation",
-    ("e4", "c5", "Nf3", "Nc6", "d4", "cxd4", "Nxd4", "g6"): "Sicilian Defense: Accelerated Dragon",
-    ("e4", "c5", "Nf3", "Nc6", "d4", "cxd4", "Nxd4", "e6"): "Sicilian Defense: Taimanov Variation",
-    ("e4", "c5", "Nf3", "e6"): "Sicilian Defense: French Variation",
-    ("e4", "c5", "Nf3", "e6", "d4", "cxd4", "Nxd4", "a6"): "Sicilian Defense: Kan Variation",
-    ("e4", "c5", "Nf3", "g6"): "Sicilian Defense: Hyperaccelerated Dragon",
-    ("e4", "c5", "c3"): "Sicilian Defense: Alapin Variation",
-    ("e4", "c5", "c3", "Nf6"): "Sicilian Defense: Alapin Variation",
-    ("e4", "c5", "c3", "d5"): "Sicilian Defense: Alapin Variation",
-    ("e4", "c5", "Nc3"): "Sicilian Defense: Closed",
-    ("e4", "c5", "Nc3", "Nc6", "f4"): "Sicilian Defense: Grand Prix Attack",
-    ("e4", "c5", "f4"): "Sicilian Defense: McDonnell Attack",
-    ("e4", "c5", "Bc4"): "Sicilian Defense: Bowdler Attack",
-    ("e4", "c5", "b4"): "Sicilian Defense: Wing Gambit",
-    ("e4", "c5", "a3"): "Sicilian Defense: Mengarini Variation",
-    ("e4", "c5", "c4"): "Sicilian Defense: Staunton-Cochrane Variation",
-    # 1. e4 e5
-    ("e4", "e5"): "King's Pawn Game: Open",
-    ("e4", "e5", "Nf3"): "King's Knight Opening",
-    ("e4", "e5", "Nf3", "Nc6"): "King's Knight Opening",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5"): "Ruy Lopez",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6"): "Ruy Lopez: Morphy Defense",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Bxc6"): "Ruy Lopez: Exchange Variation",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6"): "Ruy Lopez: Morphy Defense",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7"): "Ruy Lopez: Closed Spanish Main Line",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Nxe4"): "Ruy Lopez: Open Variation",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6", "O-O", "Be7", "Re1", "b5", "Bb3", "O-O", "c3", "d5"): "Ruy Lopez: Marshall Attack",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "Nf6"): "Ruy Lopez: Berlin Defense",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "f5"): "Ruy Lopez: Schliemann Defense",
-    ("e4", "e5", "Nf3", "Nc6", "Bb5", "Nd4"): "Ruy Lopez: Bird's Defense",
-    ("e4", "e5", "Nf3", "Nc6", "Bc4"): "Italian Game",
-    ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5"): "Italian Game: Giuoco Piano",
-    ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "b4"): "Italian Game: Evans Gambit",
-    ("e4", "e5", "Nf3", "Nc6", "Bc4", "Bc5", "c3", "Nf6", "d3"): "Italian Game: Giuoco Pianissimo",
-    ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6"): "Italian Game: Two Knights Defense",
-    ("e4", "e5", "Nf3", "Nc6", "Bc4", "Nf6", "Ng5"): "Italian Game: Knight Attack",
-    ("e4", "e5", "Nf3", "Nc6", "d4"): "Scotch Game",
-    ("e4", "e5", "Nf3", "Nc6", "d4", "exd4", "Bc4"): "Scotch Game: Scotch Gambit",
-    ("e4", "e5", "Nf3", "Nc6", "Nc3", "Nf6"): "Four Knights Game",
-    ("e4", "e5", "Nf3", "Nc6", "Nc3", "Nf6", "Bb5"): "Four Knights Game: Spanish Variation",
-    ("e4", "e5", "Nf3", "Nf6"): "Petrov's Defense",
-    ("e4", "e5", "Nf3", "Nf6", "Nxe5"): "Petrov's Defense: Classical Attack",
-    ("e4", "e5", "Nf3", "Nf6", "d4"): "Petrov's Defense: Steinitz Attack",
-    ("e4", "e5", "Nf3", "d6"): "Philidor Defense",
-    ("e4", "e5", "Nc3"): "Vienna Game",
-    ("e4", "e5", "Nc3", "Nf6", "f4"): "Vienna Game: Vienna Gambit",
-    ("e4", "e5", "Bc4"): "Bishop's Opening",
-    ("e4", "e5", "f4"): "King's Gambit",
-    ("e4", "e5", "f4", "exf4"): "King's Gambit Accepted",
-    ("e4", "e5", "f4", "d5"): "King's Gambit Declined: Falkbeer Countergambit",
-    ("e4", "e5", "d4"): "Center Game",
-    ("e4", "e5", "d4", "exd4", "c3"): "Center Game: Danish Gambit",
-    # Other 1. e4 responses
-    ("e4", "e6"): "French Defense",
-    ("e4", "e6", "d4", "d5"): "French Defense",
-    ("e4", "e6", "d4", "d5", "Nc3"): "French Defense: Classical / Winawer",
-    ("e4", "e6", "d4", "d5", "Nc3", "Nf6"): "French Defense: Classical Variation",
-    ("e4", "e6", "d4", "d5", "Nc3", "Bb4"): "French Defense: Winawer Variation",
-    ("e4", "e6", "d4", "d5", "Nc3", "dxe4"): "French Defense: Rubinstein Variation",
-    ("e4", "e6", "d4", "d5", "Nd2"): "French Defense: Tarrasch Variation",
-    ("e4", "e6", "d4", "d5", "e5"): "French Defense: Advance Variation",
-    ("e4", "e6", "d4", "d5", "exd5"): "French Defense: Exchange Variation",
-    ("e4", "c6"): "Caro-Kann Defense",
-    ("e4", "c6", "d4", "d5"): "Caro-Kann Defense",
-    ("e4", "c6", "d4", "d5", "Nc3"): "Caro-Kann Defense: Main Line",
-    ("e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Bf5"): "Caro-Kann Defense: Classical Variation",
-    ("e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Nd7"): "Caro-Kann Defense: Karpov Variation",
-    ("e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Nf6"): "Caro-Kann Defense: Tartakower Variation",
-    ("e4", "c6", "d4", "d5", "e5"): "Caro-Kann Defense: Advance Variation",
-    ("e4", "c6", "d4", "d5", "exd5"): "Caro-Kann Defense: Exchange Variation",
-    ("e4", "c6", "d4", "d5", "exd5", "cxd5", "c4"): "Caro-Kann Defense: Panov Attack",
-    ("e4", "c6", "Nc3", "d5", "Nf3"): "Caro-Kann Defense: Two Knights Attack",
-    ("e4", "d5"): "Scandinavian Defense",
-    ("e4", "d5", "exd5", "Qxd5"): "Scandinavian Defense: Mieses-Kotroc Variation",
-    ("e4", "d5", "exd5", "Nf6"): "Scandinavian Defense: Modern Variation",
-    ("e4", "Nf6"): "Alekhine's Defense",
-    ("e4", "Nf6", "e5", "Nd5"): "Alekhine's Defense: Normal Variation",
-    ("e4", "Nc6"): "Nimzowitsch Defense",
-    ("e4", "b6"): "Owen's Defense",
-    # 1. d4 openings
-    ("d4", "d5"): "Closed Game",
-    ("d4", "d5", "c4"): "Queen's Gambit",
-    ("d4", "d5", "c4", "e6"): "Queen's Gambit Declined",
-    ("d4", "d5", "c4", "e6", "Nc3", "Nf6"): "Queen's Gambit Declined: Classical Development",
-    ("d4", "d5", "c4", "e6", "Nf3", "Nf6"): "Queen's Gambit Declined: Three Knights",
-    ("d4", "d5", "c4", "e6", "Nc3", "Nf6", "Bg5"): "Queen's Gambit Declined: Orthodox Defense",
-    ("d4", "d5", "c4", "e6", "Nc3", "c5"): "Queen's Gambit Declined: Tarrasch Defense",
-    ("d4", "d5", "c4", "c6"): "Slav Defense",
-    ("d4", "d5", "c4", "c6", "Nf3", "Nf6", "Nc3", "e6"): "Semi-Slav Defense",
-    ("d4", "d5", "c4", "dxc4"): "Queen's Gambit Accepted",
-    ("d4", "d5", "c4", "e5"): "Queen's Gambit Declined: Albin Countergambit",
-    ("d4", "d5", "c4", "Nc6"): "Queen's Gambit Declined: Chigorin Defense",
-    ("d4", "d5", "Bf4"): "London System",
-    ("d4", "d5", "Nf3", "Nf6", "Bf4"): "London System",
-    ("d4", "d5", "Nf3", "Nf6", "e3"): "Colle System",
-    ("d4", "d5", "e4"): "Blackmar-Diemer Gambit",
-    ("d4", "Nf6"): "Indian Defense",
-    ("d4", "Nf6", "Bf4"): "London System",
-    ("d4", "Nf6", "Bg5"): "Trompowsky Attack",
-    ("d4", "Nf6", "c4"): "Indian Game",
-    ("d4", "Nf6", "c4", "g6"): "King's Indian Defense",
-    ("d4", "Nf6", "c4", "g6", "Nc3", "Bg7"): "King's Indian Defense: Main Line",
-    ("d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6"): "King's Indian Defense: Normal Variation",
-    ("d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "Nf3", "O-O", "Be2"): "King's Indian Defense: Classical Variation",
-    ("d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "f3"): "King's Indian Defense: Sämisch Variation",
-    ("d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "d6", "f4"): "King's Indian Defense: Four Pawns Attack",
-    ("d4", "Nf6", "c4", "g6", "Nc3", "d5"): "Grünfeld Defense",
-    ("d4", "Nf6", "c4", "g6", "Nc3", "d5", "cxd5", "Nxd5", "e4"): "Grünfeld Defense: Exchange Variation",
-    ("d4", "Nf6", "c4", "e6"): "Indian Defense: East Indian",
-    ("d4", "Nf6", "c4", "e6", "Nc3", "Bb4"): "Nimzo-Indian Defense",
-    ("d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "e3"): "Nimzo-Indian Defense: Rubinstein System",
-    ("d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "Qc2"): "Nimzo-Indian Defense: Classical Variation",
-    ("d4", "Nf6", "c4", "e6", "Nc3", "Bb4", "a3"): "Nimzo-Indian Defense: Sämisch Variation",
-    ("d4", "Nf6", "c4", "e6", "Nf3", "b6"): "Queen's Indian Defense",
-    ("d4", "Nf6", "c4", "e6", "Nf3", "Bb4"): "Bogo-Indian Defense",
-    ("d4", "Nf6", "c4", "e6", "g3"): "Catalan Opening",
-    ("d4", "Nf6", "c4", "e6", "g3", "d5", "Bg2"): "Catalan Opening: Closed",
-    ("d4", "Nf6", "c4", "c5"): "Benoni Defense",
-    ("d4", "Nf6", "c4", "c5", "d5", "e6"): "Benoni Defense: Modern Variation",
-    ("d4", "Nf6", "c4", "c5", "d5", "b5"): "Benko Gambit",
-    ("d4", "Nf6", "c4", "e5"): "Budapest Gambit",
-    ("d4", "Nf6", "c4", "d6"): "Old Indian Defense",
-    ("d4", "f5"): "Dutch Defense",
-    ("d4", "f5", "g3", "Nf6", "Bg2", "g6"): "Dutch Defense: Leningrad Variation",
-    ("d4", "f5", "c4", "e6", "g3", "d5"): "Dutch Defense: Stonewall Variation",
-    # Flank openings
-    ("c4", "e5"): "English Opening: Reversed Sicilian",
-    ("c4", "c5"): "English Opening: Symmetrical Variation",
-    ("c4", "Nf6"): "English Opening: Anglo-Indian Defense",
-    ("c4", "e6"): "English Opening: Agincourt Defense",
-    ("Nf3", "d5"): "Réti Opening: King's Indian Attack",
-    ("Nf3", "Nf6"): "Réti Opening: Symmetrical",
-    ("Nf3", "d5", "c4"): "Réti Opening: Réti Gambit",
-}
+_MAX_OPENING_SCAN_PLIES = 60
 
-_OPENING_EPD_MAP: dict[str, tuple[int, str]] | None = None
+_FALLBACK_OPENING_LINES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("B00", "King's Pawn Game", ("e4",)),
+    ("A40", "Queen's Pawn Game", ("d4",)),
+    ("A10", "English Opening", ("c4",)),
+    ("A04", "Zukertort Opening", ("Nf3",)),
+    ("B20", "Sicilian Defense", ("e4", "c5")),
+    ("B10", "Caro-Kann Defense", ("e4", "c6")),
+    ("C00", "French Defense", ("e4", "e6")),
+    ("C20", "King's Pawn Game", ("e4", "e5")),
+    ("D06", "Queen's Gambit", ("d4", "d5", "c4")),
+    ("E60", "King's Indian Defense", ("d4", "Nf6", "c4", "g6")),
+)
+
+_OPENING_EXACT_EPD_MAP: dict[str, tuple[str, str]] | None = None
+_OPENING_NO_EP_EPD_MAP: dict[str, tuple[str, str]] | None = None
 
 
-def _get_opening_epd_map() -> dict[str, tuple[int, str]]:
-    """Build a lazy transposition lookup mapping EPD -> (canonical_ply, opening_name)."""
-    global _OPENING_EPD_MAP
-    if _OPENING_EPD_MAP is not None:
-        return _OPENING_EPD_MAP
+def _strip_ep_from_epd(epd: str) -> str:
+    """Return the first 3 EPD fields (`board turn castling`) for ep-agnostic transpositions."""
+    parts = epd.split(" ")
+    return " ".join(parts[:3]) if len(parts) >= 3 else epd
 
-    epd_map: dict[str, tuple[int, str]] = {}
-    for line, name in _OPENING_BOOK_LINES.items():
-        board = chess.Board()
-        valid = True
-        for san in line:
-            try:
+
+def _get_opening_tables() -> tuple[dict[str, tuple[str, str]], dict[str, tuple[str, str]]]:
+    """Lazily load the 3,880+ position ECO opening repertoire table (`epd -> (eco, name)`)."""
+    global _OPENING_EXACT_EPD_MAP, _OPENING_NO_EP_EPD_MAP
+    if _OPENING_EXACT_EPD_MAP is not None and _OPENING_NO_EP_EPD_MAP is not None:
+        return _OPENING_EXACT_EPD_MAP, _OPENING_NO_EP_EPD_MAP
+
+    exact_map: dict[str, tuple[str, str]] = {}
+    no_ep_map: dict[str, tuple[str, str]] = {}
+
+    if OPENINGS_TSV_PATH.is_file():
+        with OPENINGS_TSV_PATH.open("r", encoding="utf-8") as fh:
+            header_skipped = False
+            for raw in fh:
+                line = raw.rstrip("\r\n")
+                if not line:
+                    continue
+                if not header_skipped:
+                    header_skipped = True
+                    if line.startswith("epd\t"):
+                        continue
+                cols = line.split("\t")
+                if len(cols) < 3:
+                    continue
+                epd, eco, name = cols[0], cols[1], cols[2]
+                entry = (eco, name)
+                exact_map[epd] = entry
+                no_ep_key = _strip_ep_from_epd(epd)
+                if no_ep_key not in no_ep_map or epd.endswith(" -"):
+                    no_ep_map[no_ep_key] = entry
+
+    if not exact_map:
+        for eco, name, moves in _FALLBACK_OPENING_LINES:
+            board = chess.Board()
+            for san in moves:
                 board.push_san(san)
-            except ValueError:
-                valid = False
-                break
-        if valid:
             epd = board.epd()
-            existing = epd_map.get(epd)
-            if existing is None or len(line) > existing[0]:
-                epd_map[epd] = (len(line), name)
+            exact_map[epd] = (eco, name)
+            no_ep_map[_strip_ep_from_epd(epd)] = (eco, name)
 
-    _OPENING_EPD_MAP = epd_map
-    return epd_map
+    _OPENING_EXACT_EPD_MAP = exact_map
+    _OPENING_NO_EP_EPD_MAP = no_ep_map
+    return exact_map, no_ep_map
 
 
-def identify_opening(san_moves: list[str]) -> str:
-    """Identify the ECO opening name from SAN moves via longest prefix and transposition."""
+def identify_opening_with_eco(
+    san_moves: list[str],
+    initial_fen: str | None = None,
+) -> tuple[str, str]:
+    """Return `(eco_code, full_opening_name)` with full transposition awareness."""
+    exact_map, no_ep_map = _get_opening_tables()
+    is_standard_start = initial_fen is None or initial_fen == chess.STARTING_FEN
+
+    try:
+        board = chess.Board() if is_standard_start else chess.Board(initial_fen)
+    except ValueError:
+        return ("", "Custom Position")
+
     if not san_moves:
-        return "Starting Position"
+        if is_standard_start:
+            return ("", "Starting Position")
+        epd = board.epd()
+        hit = exact_map.get(epd) or no_ep_map.get(_strip_ep_from_epd(epd))
+        return hit if hit is not None else ("", "Custom Position")
 
-    cleaned = [m.rstrip("+#") for m in san_moves]
-    best_ply = 0
+    best_eco = ""
     best_name = "Custom Position"
+    if not is_standard_start:
+        start_epd = board.epd()
+        start_hit = exact_map.get(start_epd) or no_ep_map.get(_strip_ep_from_epd(start_epd))
+        if start_hit is not None:
+            best_eco, best_name = start_hit
 
-    limit = min(len(cleaned), 18)
-    for length in range(limit, 0, -1):
-        prefix = tuple(cleaned[:length])
-        if prefix in _OPENING_BOOK_LINES:
-            best_ply = length
-            best_name = _OPENING_BOOK_LINES[prefix]
-            break
-
-    # Check position transpositions up to book depth
-    if best_ply < len(cleaned):
-        epd_map = _get_opening_epd_map()
-        board = chess.Board()
-        for ply, san in enumerate(cleaned[:18], start=1):
+    for san in san_moves[:_MAX_OPENING_SCAN_PLIES]:
+        try:
+            board.push_san(san)
+        except ValueError:
+            cleaned = san.rstrip("+#!? ")
             try:
-                board.push_san(san)
+                board.push_san(cleaned)
             except ValueError:
                 break
-            match = epd_map.get(board.epd())
-            if match is not None and match[0] > best_ply:
-                best_ply = match[0]
-                best_name = match[1]
+        epd = board.epd()
+        hit = exact_map.get(epd)
+        if hit is None:
+            hit = no_ep_map.get(_strip_ep_from_epd(epd))
+        if hit is not None:
+            best_eco, best_name = hit
 
-    return best_name
+    return best_eco, best_name
+
+
+def identify_opening(
+    san_moves: list[str],
+    initial_fen: str | None = None,
+) -> str:
+    """Identify the complete ECO repertoire opening name across any move order / transposition."""
+    return identify_opening_with_eco(san_moves, initial_fen=initial_fen)[1]
 
 
 def format_san_figurine(san: str) -> str:
@@ -771,6 +639,7 @@ class GameScreen(BaseScreen):
             else 0.0
         )
         self._bubble_text_anim_elapsed: float = BUBBLE_TEXT_CHANGE_DURATION
+        self._current_eco = ""
         self._current_opening = "Starting Position"
         self._cached_material_diff: int = 0
         self._move_scroll_y = 0
@@ -829,6 +698,8 @@ class GameScreen(BaseScreen):
         self._font_small = pygame.font.SysFont(
             "Segoe UI", max(11, int(12 * self._scale)), bold=True
         )
+        self._font_opening = _load_tc_font(max(11, round(12.5 * self._scale)), "semibold")
+        self._font_opening_compact = _load_tc_font(max(10, round(11 * self._scale)), "semibold")
         move_font_px = (
             11 if (self._sidebar_rect.width - max(SPACE_SM, int(18 * self._scale)) * 2) < 200
             else max(13, round(15 * self._scale))
@@ -1347,7 +1218,7 @@ class GameScreen(BaseScreen):
             int(150 * self._layout_scale),
             profile_zone_bottom + opening_gap,
         )
-        opening_h = max(30, int(36 * self._scale))
+        opening_h = max(38, round(46 * self._scale))
         self._opening_rect = pygame.Rect(
             content_left, opening_top, content_width, opening_h
         )
@@ -1931,11 +1802,14 @@ class GameScreen(BaseScreen):
     def _sync_move_state(self, auto_scroll: bool = False) -> None:
         """Refresh opening banner, cached material diff, and move-list scroll bounds."""
         if self._game is None:
+            self._current_eco = ""
             self._current_opening = "Starting Position"
             self._cached_material_diff = 0
             self._move_scroll_y = 0
             return
-        self._current_opening = identify_opening(self._game.san_moves)
+        self._current_eco, self._current_opening = identify_opening_with_eco(
+            self._game.san_moves, self._game.initial_fen
+        )
         self._cached_material_diff = self._game.material_diff()
         max_scroll = self._max_move_scroll()
         if auto_scroll:
@@ -2271,7 +2145,9 @@ class GameScreen(BaseScreen):
             changed = self._review_ply is not None
             self._review_ply = None
             self._board.set_review_position(None)
-            self._current_opening = identify_opening(self._game.san_moves)
+            self._current_eco, self._current_opening = identify_opening_with_eco(
+                self._game.san_moves, self._game.initial_fen
+            )
             if changed and total > 0:
                 self._scroll_ply_into_view(total - 1)
                 if play_sound:
@@ -2291,13 +2167,15 @@ class GameScreen(BaseScreen):
         if clamped < 0:
             review_board = chess.Board(self._game.initial_fen)
             review_move = None
-            self._current_opening = "Starting Position"
+            self._current_eco, self._current_opening = identify_opening_with_eco(
+                [], self._game.initial_fen
+            )
             self._move_scroll_y = 0
         else:
             review_move = history[clamped]
             review_board = chess.Board(review_move.fen_after)
-            self._current_opening = identify_opening(
-                self._game.san_moves[: clamped + 1]
+            self._current_eco, self._current_opening = identify_opening_with_eco(
+                self._game.san_moves[: clamped + 1], self._game.initial_fen
             )
             self._scroll_ply_into_view(clamped)
             if play_sound:
@@ -3457,7 +3335,7 @@ class GameScreen(BaseScreen):
         surf.blit(scaled, scaled.get_rect(center=center))
 
     def _draw_started_panel(self) -> None:
-        # 1. Opening banner
+        # 1. Opening banner (2-line wrapped so complete ECO repertoire names are fully visible)
         pygame.draw.rect(
             self.screen,
             _PANEL,
@@ -3471,19 +3349,43 @@ class GameScreen(BaseScreen):
             width=1,
             border_radius=max(6, int(8 * self._scale)),
         )
-        pad_x = max(8, int(12 * self._scale))
-        opening_text = self._ellipsize(
-            f"Opening: {self._current_opening}",
-            self._font_small,
-            self._opening_rect.width - pad_x * 2,
+        pad_x = max(8, int(11 * self._scale))
+        avail_w = max(40, self._opening_rect.width - pad_x * 2)
+        full_opening_label = (
+            f"{self._current_eco} · {self._current_opening}"
+            if self._current_eco
+            else f"Opening: {self._current_opening}"
         )
-        opening_surf = self._get_cached_text(self._font_small, opening_text, _TEXT)
-        self.screen.blit(
-            opening_surf,
-            opening_surf.get_rect(
-                midleft=(self._opening_rect.left + pad_x, self._opening_rect.centery)
-            ),
-        )
+        op_font = self._font_opening
+        op_lines = self._get_wrapped_lines(full_opening_label, op_font, _TEXT, avail_w)
+        if len(op_lines) > 2:
+            op_font = self._font_opening_compact
+            op_lines = self._get_wrapped_lines(full_opening_label, op_font, _TEXT, avail_w)
+        if len(op_lines) > 2:
+            # Clamp gracefully to 2 lines on ultra-narrow viewports
+            words = full_opening_label.split()
+            first_str = ""
+            rest_idx = 0
+            for idx, word in enumerate(words):
+                cand = f"{first_str} {word}".strip()
+                if first_str and op_font.size(cand)[0] > avail_w:
+                    rest_idx = idx
+                    break
+                first_str = cand
+                rest_idx = idx + 1
+            second_str = self._ellipsize(" ".join(words[rest_idx:]), op_font, avail_w)
+            op_lines = [
+                self._get_cached_text(op_font, first_str, _TEXT),
+                self._get_cached_text(op_font, second_str, _TEXT),
+            ]
+        line_h = op_font.get_linesize()
+        total_op_h = len(op_lines) * line_h
+        start_y = self._opening_rect.top + max(2, (self._opening_rect.height - total_op_h) // 2)
+        for idx, line_surf in enumerate(op_lines):
+            self.screen.blit(
+                line_surf,
+                (self._opening_rect.left + pad_x, start_y + idx * line_h),
+            )
 
         # 2. Scrollable two-column SAN move list (clickable to review any ply)
         self._draw_move_list()

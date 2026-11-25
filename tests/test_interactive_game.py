@@ -42,6 +42,7 @@ from screens.game import (
     format_time_control_label,
     get_time_control_category,
     identify_opening,
+    identify_opening_with_eco,
 )
 from screens.opponent_select import OpponentSelectScreen, _BOTS
 from screens.settings import SettingsScreen
@@ -384,7 +385,8 @@ def test_board_backed_by_chess_game_and_bars_layout():
 
 def test_opening_banner_and_figurine_formatting():
     assert identify_opening([]) == "Starting Position"
-    assert identify_opening(["e4", "c5"]) == "Sicilian Defense"
+    assert identify_opening_with_eco([]) == ("", "Starting Position")
+    assert identify_opening_with_eco(["e4", "c5"]) == ("B20", "Sicilian Defense")
     assert identify_opening(["e4", "c5", "d4"]) == "Sicilian Defense: Smith-Morra Gambit"
     assert (
         identify_opening(["e4", "c5", "d4", "cxd4", "c3"])
@@ -392,40 +394,112 @@ def test_opening_banner_and_figurine_formatting():
     )
     assert (
         identify_opening(["e4", "c5", "d4", "cxd4", "c3", "dxc3", "Nxc3"])
-        == "Sicilian Defense: Smith-Morra Gambit, Accepted"
+        == "Sicilian Defense: Smith-Morra Gambit Accepted"
     )
     assert (
         identify_opening(["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6"])
         == "Sicilian Defense: Najdorf Variation"
     )
-    assert identify_opening(["e4", "c6"]) == "Caro-Kann Defense"
-    assert identify_opening(["d4", "Nf6", "c4", "g6"]) == "King's Indian Defense"
-    # Transposition check: 1. d4 Nf6 2. c4 e6 3. Nf3 d5 -> QGD Three Knights
     assert (
-        identify_opening(["d4", "Nf6", "c4", "e6", "Nf3", "d5"])
-        == "Queen's Gambit Declined: Three Knights"
+        identify_opening(
+            ["e4", "c5", "Nf3", "d6", "d4", "cxd4", "Nxd4", "Nf6", "Nc3", "a6", "Be3"]
+        )
+        == "Sicilian Defense: Najdorf Variation, English Attack"
     )
-    # Out-of-book continuation retains deepest matched opening name
+    assert identify_opening(["e4", "c6"]) == "Caro-Kann Defense"
     assert (
-        identify_opening(["e4", "c5", "d4", "cxd4", "c3", "a6", "h4"])
+        identify_opening(["e4", "c6", "d4", "d5", "Nc3", "dxe4", "Nxe4", "Nf6", "Ng5"])
+        == "Caro-Kann Defense: Alien Gambit"
+    )
+    assert identify_opening(["d4", "Nf6", "c4", "g6"]) == "Indian Defense: West Indian Defense"
+    assert identify_opening(["d4", "Nf6", "c4", "g6", "Nc3", "Bg7"]) == "King's Indian Defense"
+    assert (
+        identify_opening(
+            [
+                "e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6",
+                "O-O", "Be7", "Re1", "b5", "Bb3", "O-O", "c3", "d5",
+            ]
+        )
+        == "Ruy Lopez: Marshall Attack"
+    )
+
+    # Multi-opening transposition checks (exact board EPD regardless of move order)
+    # 1. Indian -> QGD Three Knights Variation
+    assert (
+        identify_opening_with_eco(["d4", "Nf6", "c4", "e6", "Nf3", "d5"])
+        == ("D37", "Queen's Gambit Declined: Three Knights Variation")
+    )
+    assert (
+        identify_opening_with_eco(["d4", "d5", "c4", "e6", "Nf3", "Nf6"])
+        == ("D37", "Queen's Gambit Declined: Three Knights Variation")
+    )
+    # 2. Reti (1. Nf3 d6) -> King's Indian Defense: Orthodox Variation
+    assert (
+        identify_opening_with_eco(
+            ["Nf3", "d6", "d4", "Nf6", "c4", "g6", "Nc3", "Bg7", "e4", "O-O", "Be2", "e5"]
+        )
+        == ("E92", "King's Indian Defense: Orthodox Variation")
+    )
+    # 3. Symmetrical English -> Sicilian Accelerated Dragon, Maroczy Bind
+    assert (
+        identify_opening_with_eco(["c4", "c5", "Nf3", "Nc6", "d4", "cxd4", "Nxd4", "g6", "e4"])
+        == ("B36", "Sicilian Defense: Accelerated Dragon, Maróczy Bind")
+    )
+    # 4. Modern Defense -> Pirc Defense: Classical Variation
+    assert (
+        identify_opening_with_eco(["e4", "g6", "d4", "Bg7", "Nc3", "d6", "Nf3", "Nf6"])
+        == ("B08", "Pirc Defense: Classical Variation")
+    )
+    # 5. Horwitz Defense (1. d4 e6) -> French Defense: Winawer Variation
+    assert (
+        identify_opening_with_eco(["d4", "e6", "e4", "d5", "Nc3", "Bb4"])
+        == ("C15", "French Defense: Winawer Variation")
+    )
+    # 6. London System via multiple move orders
+    assert (
+        identify_opening(["Nf3", "d5", "d4", "Nf6", "Bf4"])
+        == "Queen's Pawn Game: London System"
+    )
+    assert (
+        identify_opening(["d4", "Nf6", "Bf4", "d5", "Nf3"])
+        == "Queen's Pawn Game: London System"
+    )
+    # 7. Reti -> Closed Catalan
+    assert (
+        identify_opening(["Nf3", "d5", "g3", "Nf6", "Bg2", "e6", "O-O", "Be7", "c4", "O-O", "d4"])
+        == "Catalan Opening: Closed"
+    )
+    # 8. Delayed Alapin -> Alapin Barmen Defense & Smith-Morra -> Open Sicilian
+    assert (
+        identify_opening(["e4", "c5", "Nf3", "d6", "c3", "Nf6"])
+        == "Sicilian Defense: Alapin Variation, Barmen Defense"
+    )
+    assert (
+        identify_opening(["e4", "c5", "d4", "cxd4", "Nf3", "d6", "Nxd4"])
+        == "Sicilian Defense: Open"
+    )
+
+    # Out-of-book continuation retains deepest matched repertoire opening name
+    assert (
+        identify_opening(["e4", "c5", "d4", "cxd4", "c3", "h6", "h4"])
         == "Sicilian Defense: Smith-Morra Gambit"
     )
 
     pirc = ["e4", "d6", "d4", "Nf6", "Nc3", "g6", "Bc4"]
-    assert identify_opening(pirc) == "Pirc Defense: Main Line, Kholmov System"
+    assert identify_opening(pirc) == "Pirc Defense: Kholmov System"
     assert format_san_figurine("Nf6") == "♘f6"
     assert format_san_figurine("e8=Q") == "e8=♕"
     assert format_san_figurine("O-O") == "O-O"
 
-    # Verify live updates on GameScreen after every human and bot move
+    # Verify live updates + transposition progression on GameScreen
     screen, _ = _game_screen("White")
     expected_progression = [
-        ("e4", "King's Pawn Game"),
-        ("c5", "Sicilian Defense"),
-        ("d4", "Sicilian Defense: Smith-Morra Gambit"),
-        ("cxd4", "Sicilian Defense: Smith-Morra Gambit"),
-        ("c3", "Sicilian Defense: Smith-Morra Gambit"),
-        ("a6", "Sicilian Defense: Smith-Morra Gambit"),
+        ("Nf3", "Zukertort Opening"),
+        ("d5", "Zukertort Opening"),
+        ("c4", "Réti Opening"),
+        ("e6", "English Opening: Agincourt Defense"),
+        ("d4", "Queen's Gambit Declined"),
+        ("Nf6", "Queen's Gambit Declined: Three Knights Variation"),
     ]
     for idx, (san, expected_opening) in enumerate(expected_progression):
         move = screen._game.board.parse_san(san)
@@ -435,6 +509,7 @@ def test_opening_banner_and_figurine_formatting():
             screen._apply_bot_move(move)
         _finish_animation(screen)
         assert screen._current_opening == expected_opening
+    assert screen._current_eco == "D37"
     screen.draw()
     screen.close()
 

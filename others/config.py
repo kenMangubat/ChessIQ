@@ -54,6 +54,7 @@ def get_stockfish_path() -> Path | None:
 # Opening book and style database
 BOOK_DB_PATH = DATA_DIR / "ken_book.db"
 STYLE_PROFILE_PATH = DATA_DIR / "ken_style_profile.json"
+OPENINGS_TSV_PATH = DATA_DIR / "chess_openings.tsv"
 
 # Offline bot calibration output files
 CALIBRATION_JSON_PATH = DATA_DIR / "calibration_results.json"
