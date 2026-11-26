@@ -8,12 +8,19 @@ import os
 import sys
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("SDL_AUDIODRIVER", "dummy")
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import chess
 import pygame
 
-from bots.ken_bot import KenBot
+from bots.ken_bot import (
+    BLUNDER_CP_LOSS,
+    KenBot,
+    PlayerMoveEvaluation,
+    classify_blunder,
+    classify_player_move,
+)
 from chess_logic import ChessGame
 from chess_logic.chess_game import (
     GameOutcome,
@@ -46,6 +53,20 @@ from screens.game import (
 )
 from screens.opponent_select import OpponentSelectScreen, _BOTS
 from screens.settings import SettingsScreen
+from ui.speech_bubble import (
+    BLUNDER_MAX_PER_GAME,
+    BLUNDER_MIN_PLAYER_MOVES_BETWEEN,
+    BUBBLE_APPEAR_DURATION,
+    BUBBLE_AUDIO_TAIL_DELAY,
+    BUBBLE_DISMISS_DURATION,
+    BUBBLE_GLOBAL_COOLDOWN,
+    BUBBLE_VISIBLE_DURATION,
+    BubblePhase,
+    SpeechBubbleController,
+    compute_visible_duration,
+    get_lines_for_event,
+    load_speech_lines,
+)
 from ui.animated_board import (
     ANIMATION_BASE_DURATION,
     ANIMATION_KNIGHT_DISTANCE,
@@ -1932,6 +1953,262 @@ def test_user_chooses_promotion_piece_live_and_premove():
     screen.close()
 
 
+def test_move_quality_and_blunder_classification():
+    """Verify pure classify_blunder and classify_player_move thresholds without real Stockfish."""
+    # 1. Clear blunder (>= 200 cp loss)
+    assert classify_blunder(50, -180) is True
+    assert classify_player_move(50, -180) == "PLAYER_BLUNDER"
+
+    # 2. Black perspective with white-POV scores
+    assert classify_blunder(-40, 200, mover_color=chess.BLACK, scores_from_white=True) is True
+    assert classify_blunder(-40, 20, mover_color=chess.BLACK, scores_from_white=True) is False
+
+    # 3. Allowing forced mate that was not there before -> always blunder
+    assert classify_blunder(100, -10000, mate_before=None, mate_after=-3) is True
+    assert classify_player_move(100, -10000, mate_before=None, mate_after=-3) == "PLAYER_BLUNDER"
+
+    # 4. Already-decided positions (|eval| >= 800 in same direction) are skipped
+    assert classify_blunder(1100, 850) is False
+    assert classify_player_move(1100, 850) is None
+    assert classify_blunder(-900, -1250) is False
+
+    # 5. Mistake (115..199 cp loss), Dubious (55..114 cp loss), Normal (< 55 cp loss)
+    assert classify_blunder(40, -100) is False
+    assert classify_player_move(40, -100) == "PLAYER_MISTAKE"
+    assert classify_player_move(40, -35) == "PLAYER_DUBIOUS"
+    assert classify_player_move(40, 10) is None
+
+    # 6. Great move (only winning/saving move beating 2nd-best by >= 160 cp)
+    assert (
+        classify_player_move(
+            220,
+            215,
+            second_best_cp=20,
+            is_sacrifice=False,
+            ply=14,
+            legal_move_count=12,
+        )
+        == "PLAYER_GREAT"
+    )
+    # Forced single legal reply is NOT a Great move
+    assert (
+        classify_player_move(220, 215, second_best_cp=20, ply=14, legal_move_count=1)
+        is None
+    )
+
+    # 7. Brilliant move (sacrificial best move with >= 150 cp margin over 2nd-best)
+    assert (
+        classify_player_move(
+            260,
+            255,
+            second_best_cp=60,
+            is_sacrifice=True,
+            ply=16,
+            legal_move_count=15,
+        )
+        == "PLAYER_BRILLIANT"
+    )
+
+
+def test_speech_bubble_state_machine_roll_left_audio_sync_and_limits():
+    """Verify 5s hold, roll-left dismissal, audio-wait sync, priority, cooldowns, and custom lines."""
+    # Verify all user-requested speech lines are present in data/speech_lines.json
+    lines = load_speech_lines(force_reload=True)
+    by_event = {
+        ev: {ln.text for ln in get_lines_for_event(ev, "focus_ken", lines=lines)}
+        for ev in (
+            "PLAYER_BLUNDER",
+            "PLAYER_MISTAKE",
+            "PLAYER_DUBIOUS",
+            "PLAYER_GREAT",
+            "PLAYER_BRILLIANT",
+        )
+    }
+    assert by_event["PLAYER_MISTAKE"] == {
+        "Sayop man ka buseng!",
+        "Nag pataka raman kag tira oy",
+        "Bushet manang tiraha oy",
+    }
+    assert by_event["PLAYER_DUBIOUS"] == {
+        "Ha? sure ka ana",
+        "Wa ka ma bo...",
+        "Ahhh mura mag sakto",
+    }
+    assert by_event["PLAYER_BLUNDER"] == {
+        "Walang kanin Buseng!",
+        "Oyy bossing kamusta kabuhay buhay",
+        "Nahhh ma esmeringhoy na imong position ron",
+    }
+    assert by_event["PLAYER_GREAT"] == {
+        "Woww pa kiss ko bi",
+        "Grabe sirr ayaw ana sir",
+    }
+    assert by_event["PLAYER_BRILLIANT"] == {
+        "OMG! unsa mana tiraha oy",
+        "Briliianttttt",
+        "Ahh shet shet nakita ako",
+    }
+
+    # Verify reading-time fallback calculation bounds
+    assert compute_visible_duration("Hi", fixed_duration=None) == 1.8
+    assert compute_visible_duration("x" * 200, fixed_duration=None) == 6.0
+    assert compute_visible_duration("Any text") == BUBBLE_VISIBLE_DURATION == 5.0
+
+    # 1. Audio sync + 5s visible hold + roll-left dismissal + clamped dt
+    audio_state = {"playing": True, "stopped": 0}
+    ctrl = SpeechBubbleController(
+        "focus_ken",
+        lines=lines,
+        reduced_motion=False,
+        is_audio_playing=lambda: audio_state["playing"],
+        play_audio=lambda _line, _bot: True,
+        stop_audio=lambda: audio_state.__setitem__("stopped", audio_state["stopped"] + 1),
+    )
+    fired = ctrl.trigger_event("PLAYER_BLUNDER", move_ply=5, player_move_number=3)
+    assert fired is not None
+    assert ctrl.phase == BubblePhase.APPEARING
+
+    # Large frame hitch (dt = 2.0) is clamped and must NOT teleport past APPEARING
+    ctrl.update(2.0)
+    assert ctrl.phase == BubblePhase.APPEARING
+
+    # Finish appearing (~0.25s)
+    for _ in range(10):
+        ctrl.update(1 / 30.0)
+    assert ctrl.phase == BubblePhase.VISIBLE
+
+    # Advance 5.5s while audio is STILL playing -> bubble MUST NOT slide away yet
+    for _ in range(165):
+        ctrl.update(1 / 30.0)
+    assert ctrl.phase == BubblePhase.VISIBLE
+
+    # Audio ends -> stays for BUBBLE_AUDIO_TAIL_DELAY (0.35s), then enters roll-left DISMISSING
+    audio_state["playing"] = False
+    for _ in range(8):
+        ctrl.update(1 / 30.0)
+    assert ctrl.phase == BubblePhase.VISIBLE
+    for _ in range(6):
+        ctrl.update(1 / 30.0)
+    assert ctrl.phase == BubblePhase.DISMISSING
+    _ap, _tx, dismiss_t = ctrl.animation_values()
+    assert 0.0 <= dismiss_t < 1.0
+
+    # Complete roll-left dismissal (~0.30s) -> HIDDEN
+    for _ in range(15):
+        ctrl.update(1 / 30.0)
+    assert ctrl.phase == BubblePhase.HIDDEN
+    assert ctrl.is_visible is False
+
+    # 2. Same move ply cannot trigger twice; blunder 6-move spacing & 3-per-game cap enforced
+    assert ctrl.trigger_event("PLAYER_BLUNDER", move_ply=5, player_move_number=3) is None
+    assert ctrl.trigger_event("PLAYER_BLUNDER", move_ply=9, player_move_number=5) is None  # < 6 moves later
+    assert ctrl.trigger_event("PLAYER_BLUNDER", move_ply=17, player_move_number=9) is not None  # #2
+    ctrl.dismiss_immediately()
+    assert ctrl.trigger_event("PLAYER_BLUNDER", move_ply=29, player_move_number=15) is not None  # #3
+    ctrl.dismiss_immediately()
+    assert ctrl.blunder_count == BLUNDER_MAX_PER_GAME == 3
+    assert ctrl.trigger_event("PLAYER_BLUNDER", move_ply=45, player_move_number=23) is None  # capped at 3
+
+    # 3. Priority replacement: higher priority preempts active lower priority & stops its audio
+    ctrl.reset_for_match()
+    audio_state["playing"] = False
+    assert ctrl.trigger_event("PLAYER_DUBIOUS", move_ply=3, player_move_number=2) is not None
+    for _ in range(10):
+        ctrl.update(1 / 30.0)
+    assert ctrl.phase == BubblePhase.VISIBLE
+    # Lower priority while busy is dropped
+    assert ctrl.trigger_event("CASTLE", move_ply=4, player_move_number=2) is None
+    # Higher priority (PLAYER_BLUNDER) preempts quickly and stops audio
+    prev_stops = audio_state["stopped"]
+    preempted = ctrl.trigger_event("PLAYER_BLUNDER", move_ply=7, player_move_number=4)
+    assert preempted is not None
+    assert audio_state["stopped"] > prev_stops
+    assert ctrl.phase == BubblePhase.DISMISSING
+    for _ in range(10):
+        ctrl.update(1 / 30.0)
+    assert ctrl.current_line is not None and ctrl.current_line.event == "PLAYER_BLUNDER"
+
+
+def test_game_screen_blunder_reaction_roll_dismiss_and_cleanup():
+    """Verify GameScreen triggers blunder reaction after slide, rolls left after 5s, and cleans up."""
+    screen, worker = _game_screen("White")
+    eval_queue: list[PlayerMoveEvaluation] = []
+    worker.poll_player_eval = lambda: eval_queue.pop(0) if eval_queue else None
+
+    # Play a human move, then inject mocked blunder evaluation from background worker
+    screen._apply_player_move(chess.E2, chess.E4, None)
+    eval_queue.append(
+        PlayerMoveEvaluation(
+            generation=screen._match_generation,
+            move_ply=1,
+            player_move_number=1,
+            event="PLAYER_BLUNDER",
+            cp_loss=320,
+        )
+    )
+    # While player's piece is still sliding, reaction waits
+    assert screen._board.is_animating is True
+    screen._poll_player_eval_results()
+    assert screen._speech.is_visible is False
+
+    # Once animation finishes, blunder reaction fires with one of the 3 authentic blunder lines
+    _finish_animation(screen)
+    assert screen._speech.is_visible is True
+    assert screen._speech.text in {
+        "Walang kanin Buseng!",
+        "Oyy bossing kamusta kabuhay buhay",
+        "Nahhh ma esmeringhoy na imong position ron",
+    }
+    # Stop real mixer voice playback so simulated 60 FPS frames don't wait for wall-clock audio
+    screen._sound_manager.stop_voice()
+    screen.draw()
+
+    # After 5+ seconds of frames, bubble rolls left (DISMISSING) and disappears (HIDDEN)
+    saw_dismissing = False
+    for _ in range(360):
+        screen.update(1 / 60.0)
+        if screen._speech.phase == BubblePhase.DISMISSING:
+            saw_dismissing = True
+            screen.draw()
+        if screen._speech.phase == BubblePhase.HIDDEN:
+            break
+    assert saw_dismissing is True
+    assert screen._speech.phase == BubblePhase.HIDDEN
+    screen.draw()
+
+    # Stale eval arriving AFTER bot already replied is ignored cleanly
+    screen._apply_bot_move(chess.Move.from_uci("e7e5"))
+    _finish_animation(screen)
+    eval_queue.append(
+        PlayerMoveEvaluation(
+            generation=screen._match_generation,
+            move_ply=1,  # stale: game is now at ply 2
+            player_move_number=1,
+            event="PLAYER_MISTAKE",
+            cp_loss=150,
+        )
+    )
+    screen._poll_player_eval_results()
+    assert screen._speech.is_visible is False
+
+    # Cleanup: resign, restart, and close dismiss any active bubble immediately
+    screen._speech.trigger_event("PLAYER_GREAT", move_ply=99, bypass_cooldown=True)
+    assert screen._speech.is_visible is True
+    screen._resign()
+    assert screen._speech.is_visible is False
+
+    screen._begin_new_game()
+    screen._speech.trigger_event("PLAYER_BRILLIANT", move_ply=101, bypass_cooldown=True)
+    assert screen._speech.is_visible is True
+    screen._begin_new_game()
+    assert screen._speech.is_visible is False
+
+    screen._speech.trigger_event("PLAYER_MISTAKE", move_ply=102, bypass_cooldown=True)
+    assert screen._speech.is_visible is True
+    screen.close()
+    assert screen._speech.is_visible is False
+
+
 if __name__ == "__main__":
     test_orientation_round_trip()
     test_orientation_corners_and_off_board()
@@ -1939,6 +2216,9 @@ if __name__ == "__main__":
     test_capture_markers()
     test_promotion_flow_white_and_flipped_black()
     test_user_chooses_promotion_piece_live_and_premove()
+    test_move_quality_and_blunder_classification()
+    test_speech_bubble_state_machine_roll_left_audio_sync_and_limits()
+    test_game_screen_blunder_reaction_roll_dismiss_and_cleanup()
     test_animation_hides_destination_until_landed()
     test_animation_mathematics()
     test_animation_queue_captures_resize_and_flip()

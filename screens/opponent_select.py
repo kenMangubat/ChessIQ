@@ -22,6 +22,7 @@ from others.config import ASSETS_DIR, ICON_MASTER_PATH, LOGO_SOURCE_PATH
 from screens.base_screen import BaseScreen
 from ui.animated_board import MAX_ANIMATION_DT, _load_svg_at_size
 from ui.button import Button
+from ui.speech_bubble import get_greeting_text
 
 
 # ── Futuristic Dark-Emerald Design Palette ───────────────────────────
@@ -53,7 +54,7 @@ _BOTS: tuple[dict[str, Any], ...] = (
         "name": "Sick Ken",
         "elo": 1350,
         "image": "sickken.png",
-        "tagline": "Bai gihilantan ko, pildiha daw ko bi",
+        "tagline": get_greeting_text("sick_ken", "Bai gihilantan ko, pildiha daw ko bi"),
         "description": "A weaker take on your style,\nwith occasional tactical errors.",
         "accent": _GOLD_ACCENT,
         "badge_icon": "spark",
@@ -63,7 +64,7 @@ _BOTS: tuple[dict[str, Any], ...] = (
         "name": "Focus Ken",
         "elo": 1800,
         "image": "focusken.png",
-        "tagline": "Ha?? sure ka makig duwa ka nako",
+        "tagline": get_greeting_text("focus_ken", "Ha?? sure ka makig duwa ka nako"),
         "description": "Consistent decisions and\nyour familiar openings.",
         "accent": _EMERALD_PRIMARY,
         "badge_icon": "target",
@@ -73,7 +74,7 @@ _BOTS: tuple[dict[str, Any], ...] = (
         "name": "Condition Ken",
         "elo": 2350,
         "image": "conditionken.jpg",
-        "tagline": "hmmm dependi kong 3 yan!",
+        "tagline": get_greeting_text("condition_ken", "hmmm dependi kong 3 yan!"),
         "description": "Advanced tactical and\npositional precision.",
         "accent": _ELECTRIC_BLUE,
         "badge_icon": "crown",

@@ -14,8 +14,9 @@ __pycache__/
 *.exe
 engine/stockfish.exe
 
-# Raw source media (extracted WAV clips live in assets/sounds/)
+# Raw source media (extracted/clipped WAV clips live in assets/sounds/)
 assets/chesssound.mp4
+assets/walang kanen buseng.mp3
 
 # Retraining and DB backups
 *.bak_*

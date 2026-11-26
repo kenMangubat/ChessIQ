@@ -13,7 +13,13 @@ import chess
 import numpy as np
 import pygame
 
-from bots.ken_bot import BotWorker, KenBot, fallback_heuristic_move, get_profile
+from bots.ken_bot import (
+    BotWorker,
+    KenBot,
+    PlayerMoveEvaluation,
+    fallback_heuristic_move,
+    get_profile,
+)
 from chess_logic.chess_game import (
     ChessGame,
     GameOutcome,
@@ -35,6 +41,21 @@ from ui.animated_board import (
 from ui.button import Button
 from ui.hamburger_menu import ENDED_MATCH_ACTIONS, HamburgerMenu, MATCH_ACTIONS
 from ui.sound_manager import SoundManager
+from ui.speech_bubble import (
+    BUBBLE_APPEAR_DURATION,
+    BUBBLE_AUDIO_TAIL_DELAY,
+    BUBBLE_DISMISS_DURATION,
+    BUBBLE_TEXT_CHANGE_DURATION,
+    BUBBLE_TEXT_DELAY,
+    BUBBLE_TEXT_DURATION,
+    BUBBLE_VISIBLE_DURATION,
+    BubblePhase,
+    SETUP_BUBBLE_AUTO_DISMISS,
+    SpeechBubbleController,
+    SpeechLine,
+    get_greeting_text,
+    normalize_bot_id,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -175,10 +196,7 @@ TC_DROPDOWN_ANIM_DURATION = 0.24        # smooth 240ms expand/collapse
 TC_SELECT_ANIM_SPEED = 10.0             # smooth ~220ms selection transition
 
 # ── Chess.com-style Speech Bubble animation constants ────────────────
-BUBBLE_ANIM_DURATION = 0.50             # 500ms bubble emergence (450-600ms)
-BUBBLE_TEXT_DELAY = 0.28                # 280ms delay before text fades in (250-350ms)
-BUBBLE_TEXT_DURATION = 0.30             # 300ms text fade + subtle rise (250-350ms)
-BUBBLE_TEXT_CHANGE_DURATION = 0.26      # 260ms smooth transition on dialogue updates
+BUBBLE_ANIM_DURATION = BUBBLE_APPEAR_DURATION
 BUBBLE_TEXT_SLIDE_PX = 7                # gentle upward text glide
 BUBBLE_SCALE_START = 0.38               # emerges naturally from avatar tail tip
 
@@ -628,8 +646,11 @@ class GameScreen(BaseScreen):
             sound_manager if sound_manager is not None else SoundManager()
         )
         self._opponent_name = str(opponent["name"])
+        self._bot_id = normalize_bot_id(self._opponent_name)
         self._opponent_elo = int(opponent["elo"])
-        self._opponent_tagline = str(opponent["tagline"])
+        self._opponent_tagline = str(
+            opponent.get("tagline") or get_greeting_text(self._bot_id)
+        )
         self._selected_preset: TimeControlPreset | None = PRESET_BY_LABEL[
             DEFAULT_TIME_CONTROL_LABEL
         ]
@@ -657,12 +678,24 @@ class GameScreen(BaseScreen):
         self._chat_text = self._opponent_tagline
         self._reduced_motion = _prefers_reduced_motion()
         self._last_bubble_msg = self._opponent_tagline
-        self._bubble_anim_elapsed: float = (
-            BUBBLE_ANIM_DURATION + BUBBLE_TEXT_DURATION
-            if self._reduced_motion
-            else 0.0
-        )
         self._bubble_text_anim_elapsed: float = BUBBLE_TEXT_CHANGE_DURATION
+        self._speech = SpeechBubbleController(
+            self._bot_id,
+            reduced_motion=self._reduced_motion,
+            is_audio_playing=self._sound_manager.is_voice_playing,
+            play_audio=lambda line, bid: self._sound_manager.play_voice(
+                bid, line.id, explicit_audio=line.audio
+            ),
+            stop_audio=self._sound_manager.stop_voice,
+        )
+        self._speech.show_setup_greeting(fallback_text=self._opponent_tagline)
+        self._bubble_render_cache: dict[
+            tuple[str, int, float],
+            tuple[pygame.Surface, pygame.Rect, int, int, int],
+        ] = {}
+        self._player_move_count: int = 0
+        self._pending_player_eval_ctx: dict[str, object] | None = None
+        self._pending_player_eval_result: PlayerMoveEvaluation | None = None
         self._current_eco = ""
         self._current_opening = "Starting Position"
         self._cached_material_diff: int = 0
@@ -1658,33 +1691,47 @@ class GameScreen(BaseScreen):
         if self._notice_timer > 0:
             self._notice_timer = max(0.0, self._notice_timer - dt)
 
-        # Speech bubble entrance & dynamic dialogue text transition
+        # Speech bubble state machine (appear -> 5s hold / audio finish -> roll left -> hidden)
         clamped_dt = min(max(0.0, dt), MAX_ANIMATION_DT)
-        current_bubble_msg = (
-            self._chat_text if self._game_started else self._opponent_tagline
-        )
-        if current_bubble_msg != self._last_bubble_msg:
-            self._last_bubble_msg = current_bubble_msg
-            if self._reduced_motion:
-                self._bubble_text_anim_elapsed = BUBBLE_TEXT_CHANGE_DURATION
-            else:
-                self._bubble_text_anim_elapsed = 0.0
-        if self._reduced_motion:
-            self._bubble_anim_elapsed = BUBBLE_ANIM_DURATION + BUBBLE_TEXT_DURATION
-            self._bubble_text_anim_elapsed = BUBBLE_TEXT_CHANGE_DURATION
-        else:
-            max_entrance = max(
-                BUBBLE_ANIM_DURATION, BUBBLE_TEXT_DELAY + BUBBLE_TEXT_DURATION
+        if self._game_started and self._chat_text and self._chat_text != self._last_bubble_msg:
+            # Support dynamic direct _chat_text updates cleanly through the speech controller
+            was_visible = self._speech.phase == BubblePhase.VISIBLE
+            self._last_bubble_msg = self._chat_text
+            custom_line = SpeechLine(
+                id="dynamic_chat",
+                bots=(self._bot_id,),
+                event="DYNAMIC",
+                text=self._chat_text,
+                priority=50,
             )
-            if self._bubble_anim_elapsed < max_entrance:
-                self._bubble_anim_elapsed = min(
-                    max_entrance, self._bubble_anim_elapsed + clamped_dt
-                )
-            if self._bubble_text_anim_elapsed < BUBBLE_TEXT_CHANGE_DURATION:
-                self._bubble_text_anim_elapsed = min(
-                    BUBBLE_TEXT_CHANGE_DURATION,
-                    self._bubble_text_anim_elapsed + clamped_dt,
-                )
+            self._speech._activate_line(
+                custom_line,
+                auto_dismiss=True,
+                visible_duration=BUBBLE_VISIBLE_DURATION,
+            )
+            if was_visible:
+                # Bubble is already open: keep body at 1.0 and animate only the new text
+                self._speech._phase = BubblePhase.VISIBLE
+                self._speech._visible_elapsed = 0.0
+                self._speech._phase_elapsed = BUBBLE_APPEAR_DURATION + BUBBLE_TEXT_DURATION
+            self._bubble_text_anim_elapsed = (
+                BUBBLE_TEXT_CHANGE_DURATION if self._reduced_motion else 0.0
+            )
+        self._speech.update(clamped_dt)
+        if self._speech.is_visible:
+            self._chat_text = self._speech.text
+            self._last_bubble_msg = self._speech.text
+        else:
+            self._chat_text = ""
+            self._last_bubble_msg = ""
+
+        if self._reduced_motion:
+            self._bubble_text_anim_elapsed = BUBBLE_TEXT_CHANGE_DURATION
+        elif self._bubble_text_anim_elapsed < BUBBLE_TEXT_CHANGE_DURATION:
+            self._bubble_text_anim_elapsed = min(
+                BUBBLE_TEXT_CHANGE_DURATION,
+                self._bubble_text_anim_elapsed + clamped_dt,
+            )
 
         if self._game_started:
             for button in (
@@ -1764,12 +1811,16 @@ class GameScreen(BaseScreen):
         )
 
     def close(self) -> None:
-        """Stop the bot worker thread and its engine process."""
+        """Stop voice audio, dismiss bubble, and stop the bot worker thread and engine."""
+        self._speech.dismiss_immediately()
+        self._sound_manager.stop_voice()
         if self._bot_worker is not None:
             self._bot_worker.stop()
         self._bot_worker = None
         self._bot = None
         self._pending_requests.clear()
+        self._pending_player_eval_ctx = None
+        self._pending_player_eval_result = None
 
     # ------------------------------------------------------------------
     # Match lifecycle
@@ -1812,12 +1863,19 @@ class GameScreen(BaseScreen):
         self._resign_confirm_anim = 0.0
         self._notice_text = None
         self._notice_timer = 0.0
-        self._chat_text = self._opponent_tagline
+        self._speech.reset_for_match()
+        self._chat_text = ""
+        self._last_bubble_msg = ""
+        self._player_move_count = 0
+        self._pending_player_eval_ctx = None
+        self._pending_player_eval_result = None
         self._review_ply = None
         self._hovered_move_ply = None
         self._menu.set_actions(MATCH_ACTIONS)
         self._sync_move_state(auto_scroll=True)
         self._sound_manager.play("game_start")
+        if self._player_color == chess.WHITE:
+            self._request_idle_player_pre_eval()
 
     def _invalidate_pending_search(self) -> None:
         """Mark any in-flight bot search as stale; its result will be discarded."""
@@ -1879,9 +1937,14 @@ class GameScreen(BaseScreen):
         return min(1.0, max(0.0, self._popup_anim_elapsed / DIALOG_ENTRANCE_DURATION))
 
     def _refresh_result(self) -> None:
-        """Lock the board, pause clocks, and reveal result UI once final animation finishes."""
+        """Lock the board, pause clocks, stop voice/bubble, and reveal result UI."""
         if self._game is not None and self._game.is_game_over:
             self._close_resign_confirm()
+            self._speech.dismiss_immediately()
+            self._chat_text = ""
+            self._last_bubble_msg = ""
+            self._pending_player_eval_ctx = None
+            self._pending_player_eval_result = None
             self._clock.pause()
             self._result_text = self._describe_outcome(self._game.outcome)
             if self._board.is_animating:
@@ -1892,7 +1955,6 @@ class GameScreen(BaseScreen):
             self._board.clear_selection()
             self._board.clear_premove()
             self._menu.set_actions(ENDED_MATCH_ACTIONS)
-            self._chat_text = self._endgame_chat_line(self._game.outcome)
 
     def _describe_outcome(self, outcome: GameOutcome) -> str:
         if outcome.winner is None:
@@ -1910,18 +1972,28 @@ class GameScreen(BaseScreen):
         return "GG! Want a rematch?"
 
     def _update_chat_for_move(self, info: MoveInfo) -> None:
-        if info.is_checkmate:
+        if info.is_checkmate or self._game is None:
             return
+        move_ply = len(self._game.move_history)
+        event: str | None = None
         if info.is_check:
-            self._chat_text = "Check! Watch the king."
+            event = "CHECK"
         elif info.is_promotion:
-            self._chat_text = "Fresh queen on the board!"
+            event = "PROMOTION"
         elif info.is_capture and info.captured_piece in ("Q", "R"):
-            self._chat_text = "Heavy piece off the board!"
+            event = "HEAVY_CAPTURE"
         elif info.is_castling:
-            self._chat_text = "King safely tucked away."
-        else:
-            self._chat_text = self._opponent_tagline
+            event = "CASTLE"
+        if event is not None:
+            fired = self._speech.trigger_event(
+                event,
+                move_ply=move_ply,
+                auto_dismiss=True,
+                visible_duration=BUBBLE_VISIBLE_DURATION,
+            )
+            if fired is not None:
+                self._chat_text = fired.text
+                self._last_bubble_msg = fired.text
 
     # ------------------------------------------------------------------
     # Input & Sidebar Actions
@@ -2441,9 +2513,80 @@ class GameScreen(BaseScreen):
             self._board.animate_move(info, duration_override=duration_override)
         else:
             self._board.clear_selection()
+        self._player_move_count += 1
+        if not self._game.is_game_over:
+            self._pending_player_eval_ctx = {
+                "generation": self._match_generation,
+                "move_ply": len(self._game.move_history),
+                "player_move_number": self._player_move_count,
+                "board_before_fen": board_before.fen(),
+                "move_uci": info.move.uci(),
+                "mover_color": board_before.turn,
+            }
+            self._pending_player_eval_result = None
+        else:
+            self._pending_player_eval_ctx = None
+            self._pending_player_eval_result = None
         self._sync_move_state(auto_scroll=True)
         self._update_chat_for_move(info)
         self._refresh_result()
+
+    def _request_idle_player_pre_eval(self) -> None:
+        """Silently pre-evaluate the human's turn in the background thread while idle."""
+        if (
+            not self._is_game_active
+            or self._game is None
+            or self._bot_worker is None
+            or self._game.turn_color != self._player_color
+        ):
+            return
+        pre_eval_fn = getattr(self._bot_worker, "request_position_eval", None)
+        if callable(pre_eval_fn):
+            try:
+                pre_eval_fn(self._game.board)
+            except Exception:
+                pass
+
+    def _poll_player_eval_results(self) -> None:
+        """Drain background move-quality evaluations and fire reaction once player slide ends."""
+        if self._bot_worker is not None:
+            poll_fn = getattr(self._bot_worker, "poll_player_eval", None)
+            if callable(poll_fn):
+                while True:
+                    res = poll_fn()
+                    if res is None:
+                        break
+                    if (
+                        res.generation == self._match_generation
+                        and self._is_game_active
+                        and self._game is not None
+                        and res.move_ply == len(self._game.move_history)
+                    ):
+                        self._pending_player_eval_result = res
+
+        # Fire reaction only after the player's move animation lands (and before bot moves)
+        pending = self._pending_player_eval_result
+        if pending is None or self._board.is_animating:
+            return
+        self._pending_player_eval_result = None
+        if (
+            not self._is_game_active
+            or self._game is None
+            or pending.generation != self._match_generation
+            or pending.move_ply != len(self._game.move_history)
+            or pending.event is None
+        ):
+            return
+        fired = self._speech.trigger_event(
+            pending.event,
+            move_ply=pending.move_ply,
+            player_move_number=pending.player_move_number,
+            auto_dismiss=True,
+            visible_duration=BUBBLE_VISIBLE_DURATION,
+        )
+        if fired is not None:
+            self._chat_text = fired.text
+            self._last_bubble_msg = fired.text
 
     # ------------------------------------------------------------------
     # Bot turn (background thread via BotWorker + natural perceived pacing)
@@ -2464,8 +2607,9 @@ class GameScreen(BaseScreen):
         if self._match_generation in self._pending_requests and not self._board.is_animating:
             self._bot_think_elapsed += max(0.0, dt)
 
-        # Drain finished worker moves non-blockingly
+        # Drain finished worker moves and player move-quality evaluations non-blockingly
         self._poll_bot_results()
+        self._poll_player_eval_results()
 
         # Wait asynchronously for remaining minimum perceived thinking time AFTER player anim lands
         if self._ready_bot_move is not None:
@@ -2490,7 +2634,15 @@ class GameScreen(BaseScreen):
             assert self._bot_worker is not None and self._game is not None
             # Start background thinking immediately (even while player animation runs)
             self._bot_think_elapsed = 0.0
-            self._bot_worker.request_move(self._game.board)
+            eval_ctx = self._pending_player_eval_ctx
+            self._pending_player_eval_ctx = None
+            try:
+                self._bot_worker.request_move(
+                    self._game.board, player_move_context=eval_ctx
+                )
+            except TypeError:
+                # Backward compatibility for simple test doubles without player_move_context
+                self._bot_worker.request_move(self._game.board)
             self._pending_requests.append(self._match_generation)
 
     def _should_request_bot_move(self) -> bool:
@@ -2558,6 +2710,8 @@ class GameScreen(BaseScreen):
         self._sync_move_state(auto_scroll=True)
         self._update_chat_for_move(info)
         self._refresh_result()
+        # Pre-evaluate the resulting human-to-move position silently while human thinks
+        self._request_idle_player_pre_eval()
 
     # ------------------------------------------------------------------
     # Rendering
@@ -2766,6 +2920,10 @@ class GameScreen(BaseScreen):
                         + index * self._font_setup_header.get_linesize(),
                     ),
                 )
+        # Draw speech bubble BEFORE avatar so roll-left dismissal tucks smoothly behind avatar
+        if self._speech.is_visible:
+            self._draw_speech_bubble(self._speech.text)
+
         self.screen.blit(self._avatar, self._avatar_rect)
         pygame.draw.circle(
             self.screen,
@@ -2786,29 +2944,11 @@ class GameScreen(BaseScreen):
                 )
             )
 
-        bubble_msg = self._chat_text if self._game_started else self._opponent_tagline
-        if bubble_msg != self._last_bubble_msg:
-            self._last_bubble_msg = bubble_msg
-            self._bubble_text_anim_elapsed = (
-                BUBBLE_TEXT_CHANGE_DURATION if self._reduced_motion else 0.0
-            )
-        self._draw_speech_bubble(bubble_msg)
-
     def _speech_bubble_progress(self) -> tuple[float, float]:
         """Return `(bubble_t, text_t)` animation progress values in [0.0, 1.0]."""
+        appear_t, text_t, _dismiss_t = self._speech.animation_values()
         if self._reduced_motion:
-            return 1.0, 1.0
-        bubble_t = min(
-            1.0, max(0.0, self._bubble_anim_elapsed / max(0.01, BUBBLE_ANIM_DURATION))
-        )
-        if self._bubble_anim_elapsed <= BUBBLE_TEXT_DELAY:
-            entrance_text_t = 0.0
-        else:
-            entrance_text_t = min(
-                1.0,
-                (self._bubble_anim_elapsed - BUBBLE_TEXT_DELAY)
-                / max(0.01, BUBBLE_TEXT_DURATION),
-            )
+            return appear_t, text_t
         change_text_t = min(
             1.0,
             max(
@@ -2817,15 +2957,18 @@ class GameScreen(BaseScreen):
                 / max(0.01, BUBBLE_TEXT_CHANGE_DURATION),
             ),
         )
-        return bubble_t, min(entrance_text_t, change_text_t)
+        return appear_t, min(text_t, change_text_t)
 
-    def _draw_speech_bubble(self, bubble_msg: str) -> None:
-        """Render the opponent speech bubble with Chess.com-style emergence & text reveal."""
-        bubble_t, text_t = self._speech_bubble_progress()
-        if bubble_t <= 0.005:
-            return
-
+    def _get_cached_bubble_surface(
+        self, bubble_msg: str
+    ) -> tuple[pygame.Surface, pygame.Rect, int, int, int]:
+        """Build and cache the static full-opacity speech bubble surface for *bubble_msg*."""
         inner_w = max(1, self._tagline_rect.width - self._bubble_padding_x * 2)
+        cache_key = (bubble_msg, inner_w, round(self._scale, 3))
+        cached = self._bubble_render_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
         bubble_lines = self._get_wrapped_lines(
             bubble_msg,
             self._font_setup_bubble,
@@ -2846,7 +2989,6 @@ class GameScreen(BaseScreen):
         )
         bubble_rad = max(10, round((RADIUS_BUBBLE + 2) * self._scale))
 
-        # Compose bubble + tail onto a crisp local SRCALPHA canvas anchored at the tail tip
         shadow_pad = max(3, round(4 * self._scale))
         canvas_w = tail_width + bubble_rect.width + shadow_pad * 2
         canvas_h = bubble_rect.height + shadow_pad * 2
@@ -2868,18 +3010,145 @@ class GameScreen(BaseScreen):
             (local_rect.left + SETUP_BUBBLE_TAIL_INSET + 2, local_tail_y + tail_half_h),
         )
 
-        # Subtle soft drop shadow beneath the bubble
+        # Subtle soft drop shadow + seamless white rounded bubble & tail
         shadow_rect = local_rect.move(0, max(2, round(2 * self._scale)))
         pygame.draw.rect(
             canvas, (14, 13, 12, 46), shadow_rect, border_radius=bubble_rad
         )
-        # Seamless white bubble body + tail pointing to opponent avatar
         pygame.draw.polygon(canvas, (*_BUBBLE, 255), tail_poly)
         pygame.draw.rect(
             canvas, (*_BUBBLE, 255), local_rect, border_radius=bubble_rad
         )
 
-        # Step 2: Delayed dialogue text fade-in + subtle upward glide (clipped to bubble interior)
+        text_block_h = len(bubble_lines) * line_h
+        avail_h = max(1, local_rect.height - self._bubble_padding_y * 2)
+        base_y = local_rect.top + self._bubble_padding_y + max(0, (avail_h - text_block_h) // 2)
+        for idx, line_surf in enumerate(bubble_lines):
+            canvas.blit(
+                line_surf,
+                (local_rect.left + self._bubble_padding_x, base_y + idx * line_h),
+            )
+
+        if len(self._bubble_render_cache) >= 48:
+            self._bubble_render_cache.clear()
+        packed = (canvas, bubble_rect, local_tail_y, tail_width, shadow_pad)
+        self._bubble_render_cache[cache_key] = packed
+        return packed
+
+    def _draw_speech_bubble(self, bubble_msg: str) -> None:
+        """Render the opponent speech bubble: spring pop-in, cached static hold, and smooth roll-left exit."""
+        appear_t, text_t, dismiss_t = self._speech.animation_values()
+        if not self._reduced_motion:
+            change_t = min(
+                1.0,
+                max(
+                    0.0,
+                    self._bubble_text_anim_elapsed / max(0.01, BUBBLE_TEXT_CHANGE_DURATION),
+                ),
+            )
+            text_t = min(text_t, change_t)
+
+        if appear_t <= 0.005 or dismiss_t >= 0.999:
+            return
+
+        full_canvas, bubble_rect, local_tail_y, tail_width, shadow_pad = (
+            self._get_cached_bubble_surface(bubble_msg)
+        )
+        canvas_w, canvas_h = full_canvas.get_size()
+        base_left = bubble_rect.left - tail_width - shadow_pad
+        base_top = bubble_rect.top - shadow_pad
+
+        # ── Phase 3: DISMISSING — Smooth rounded roll / slide-left retraction into the avatar ──
+        if dismiss_t > 0.001:
+            e = dismiss_t * dismiss_t * dismiss_t  # smooth cubic ease-in roll
+            bubble_rad = max(10, round((RADIUS_BUBBLE + 2) * self._scale))
+            roll_body_w = max(4, round(bubble_rect.width * (1.0 - e)))
+            roll_surf = pygame.Surface((tail_width + roll_body_w + shadow_pad * 2, canvas_h), pygame.SRCALPHA)
+            body_rect = pygame.Rect(
+                shadow_pad + tail_width, shadow_pad, roll_body_w, bubble_rect.height
+            )
+            # Keep soft drop shadow + crisp rounded bubble pill shape as it rolls leftward
+            shadow_r = body_rect.move(0, max(2, round(2 * self._scale)))
+            pygame.draw.rect(
+                roll_surf, (14, 13, 12, 42), shadow_r, border_radius=min(bubble_rad, roll_body_w // 2)
+            )
+            tail_half_h = max(SPACE_XS, round(SETUP_BUBBLE_TAIL_HALF_HEIGHT * self._scale))
+            tail_poly = (
+                (body_rect.left + min(SETUP_BUBBLE_TAIL_INSET + 2, roll_body_w // 2), local_tail_y - tail_half_h),
+                (shadow_pad, local_tail_y),
+                (body_rect.left + min(SETUP_BUBBLE_TAIL_INSET + 2, roll_body_w // 2), local_tail_y + tail_half_h),
+            )
+            pygame.draw.polygon(roll_surf, (*_BUBBLE, 255), tail_poly)
+
+            # Slide the bubble interior smoothly leftward inside the shrinking rounded pill mask
+            interior = pygame.Surface((roll_body_w, bubble_rect.height), pygame.SRCALPHA)
+            slide_dx = bubble_rect.width - roll_body_w
+            src_body_x = shadow_pad + tail_width + slide_dx
+            interior.blit(
+                full_canvas,
+                (0, 0),
+                area=pygame.Rect(src_body_x, shadow_pad, roll_body_w, bubble_rect.height),
+            )
+            # Subtle opaque cylinder shading along the rolling right edge (before pill mask)
+            curl_w = min(roll_body_w, max(6, round(12 * self._scale)))
+            if curl_w >= 6 and roll_body_w > curl_w + 4:
+                for step in range(curl_w):
+                    frac = step / max(1, curl_w - 1)
+                    dim = round(28 * math.sin(frac * math.pi))
+                    col = (255 - dim, 255 - dim, 253 - dim, 255)
+                    pygame.draw.line(
+                        interior,
+                        col,
+                        (roll_body_w - curl_w + step, 0),
+                        (roll_body_w - curl_w + step, bubble_rect.height - 1),
+                    )
+            pill_mask = pygame.Surface((roll_body_w, bubble_rect.height), pygame.SRCALPHA)
+            pygame.draw.rect(
+                pill_mask,
+                (255, 255, 255, 255),
+                (0, 0, roll_body_w, bubble_rect.height),
+                border_radius=min(bubble_rad, max(2, roll_body_w // 2)),
+            )
+            interior.blit(pill_mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+            roll_surf.blit(interior, body_rect.topleft)
+
+            alpha = max(0, min(255, round(255 * min(1.0, (1.0 - e) * 1.9))))
+            roll_surf.set_alpha(alpha)
+            tuck_x = round(min(tail_width + shadow_pad, self._avatar_size * 0.25) * e)
+            self.screen.blit(roll_surf, (base_left - tuck_x, base_top))
+            return
+
+        # ── Phase 2: VISIBLE — single cached blit (zero per-frame allocations) ──
+        if appear_t >= 0.999 and text_t >= 0.999:
+            self.screen.blit(full_canvas, (base_left, base_top))
+            return
+
+        # ── Phase 1: APPEARING — spring emergence from tail tip + staggered text reveal ──
+        inner_w = max(1, self._tagline_rect.width - self._bubble_padding_x * 2)
+        bubble_lines = self._get_wrapped_lines(
+            bubble_msg,
+            self._font_setup_bubble,
+            THEME_BUBBLE_TEXT,
+            inner_w,
+        )
+        line_h = self._font_setup_bubble.get_linesize()
+        tail_half_h = max(SPACE_XS, round(SETUP_BUBBLE_TAIL_HALF_HEIGHT * self._scale))
+        bubble_rad = max(10, round((RADIUS_BUBBLE + 2) * self._scale))
+
+        canvas = pygame.Surface((canvas_w, canvas_h), pygame.SRCALPHA)
+        local_rect = pygame.Rect(
+            shadow_pad + tail_width, shadow_pad, bubble_rect.width, bubble_rect.height
+        )
+        tail_poly = (
+            (local_rect.left + SETUP_BUBBLE_TAIL_INSET + 2, local_tail_y - tail_half_h),
+            (shadow_pad, local_tail_y),
+            (local_rect.left + SETUP_BUBBLE_TAIL_INSET + 2, local_tail_y + tail_half_h),
+        )
+        shadow_rect = local_rect.move(0, max(2, round(2 * self._scale)))
+        pygame.draw.rect(canvas, (14, 13, 12, 46), shadow_rect, border_radius=bubble_rad)
+        pygame.draw.polygon(canvas, (*_BUBBLE, 255), tail_poly)
+        pygame.draw.rect(canvas, (*_BUBBLE, 255), local_rect, border_radius=bubble_rad)
+
         if text_t > 0.01:
             text_ease = ease_progress(text_t, "ease_out_cubic")
             text_alpha = int(255 * text_ease)
@@ -2892,7 +3161,7 @@ class GameScreen(BaseScreen):
                 + max(0, (avail_h - text_block_h) // 2)
                 + text_slide_y
             )
-            text_layer = pygame.Surface(canvas.get_size(), pygame.SRCALPHA)
+            text_layer = pygame.Surface((canvas_w, canvas_h), pygame.SRCALPHA)
             clip_rect = local_rect.inflate(
                 -self._bubble_padding_x, -max(2, self._bubble_padding_y // 2)
             )
@@ -2906,13 +3175,12 @@ class GameScreen(BaseScreen):
             text_layer.set_alpha(text_alpha)
             canvas.blit(text_layer, (0, 0))
 
-        # Step 1: Smooth spring scale + opacity emerging from avatar-facing tail tip
         pivot_x = bubble_rect.left - tail_width
         pivot_y = bubble_rect.top + (local_tail_y - shadow_pad)
-        if bubble_t < 0.999:
-            spring = _ease_out_back_soft(bubble_t)
+        if appear_t < 0.999:
+            spring = _ease_out_back_soft(appear_t)
             scale = max(0.05, BUBBLE_SCALE_START + (1.0 - BUBBLE_SCALE_START) * spring)
-            opacity = min(1.0, ease_progress(min(1.0, bubble_t * 1.55), "ease_out_cubic"))
+            opacity = min(1.0, ease_progress(min(1.0, appear_t * 1.55), "ease_out_cubic"))
             sw = max(2, round(canvas_w * scale))
             sh = max(2, round(canvas_h * scale))
             scaled = pygame.transform.smoothscale(canvas, (sw, sh))
@@ -2921,9 +3189,7 @@ class GameScreen(BaseScreen):
             draw_y = round(pivot_y - local_tail_y * scale)
             self.screen.blit(scaled, (draw_x, draw_y))
         else:
-            self.screen.blit(
-                canvas, (bubble_rect.left - tail_width - shadow_pad, bubble_rect.top - shadow_pad)
-            )
+            self.screen.blit(canvas, (base_left, base_top))
 
     def _draw_setup_panel(self) -> None:
         padding = max(SPACE_SM, int(18 * self._scale))

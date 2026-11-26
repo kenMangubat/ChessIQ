@@ -268,3 +268,113 @@ def test_menu_music_stops_in_game_while_match_sfx_stay_active() -> None:
         assert sm.music_playing is True
         assert mock_load.call_count == 2
         assert mock_play.call_count == 2
+
+
+# ── Bot voice playback & clipping tests ──────────────────────────────
+
+
+def test_voice_channel_volume_mute_missing_file_and_failure(tmp_path: Path) -> None:
+    """Verify dedicated voice channel playback, caching, volume/mute sync, and silent fallbacks."""
+    from others.config import VOICE_DIR
+
+    fake_sound = MagicMock()
+    fake_channel = MagicMock()
+    fake_channel.get_busy.return_value = True
+
+    with patch("pygame.mixer.get_init", return_value=(44100, -16, 2)), patch(
+        "pygame.mixer.get_num_channels", return_value=8
+    ), patch("pygame.mixer.set_reserved"), patch(
+        "pygame.mixer.Channel", return_value=fake_channel
+    ), patch("pygame.mixer.Sound", return_value=fake_sound):
+        sm = SoundManager(SOUNDS_DIR, volume=0.75, voice_dir=VOICE_DIR)
+        assert sm.play_voice("sick_ken", "greeting") is True
+        assert fake_channel.play.call_count == 1
+        assert sm.is_voice_playing() is True
+
+        # Missing clip degrades silently without raising
+        assert sm.play_voice("sick_ken", "nonexistent_line_xyz", explicit_audio="missing_file.wav") is False
+
+        # Volume updates propagate to dedicated voice channel
+        sm.set_volume(0.35)
+        fake_channel.set_volume.assert_called_with(0.35)
+
+        # Mute stops voice immediately and blocks further playback
+        assert sm.toggle_mute() is True
+        fake_channel.stop.assert_called()
+        assert sm.play_voice("sick_ken", "greeting") is False
+
+        # Playback error is caught cleanly without crashing
+        sm.toggle_mute()
+        fake_channel.play.side_effect = pygame.error("Device disconnected")
+        assert sm.play_voice("focus_ken", "greeting") is False
+
+    # Unavailable mixer never crashes
+    with patch("pygame.mixer.get_init", return_value=None), patch(
+        "pygame.mixer.init", side_effect=pygame.error("No audio device")
+    ):
+        sm_off = SoundManager(tmp_path, voice_dir=VOICE_DIR)
+        assert sm_off.play_voice("sick_ken", "greeting") is False
+        assert sm_off.is_voice_playing() is False
+        sm_off.stop_voice()
+
+
+def test_clip_audio_trims_synthetic_signal_without_clipping() -> None:
+    """Verify others.clip_audio trims silence with ~70 ms padding and normalizes without clipping."""
+    import numpy as np
+    from others.clip_audio import (
+        DEFAULT_FADE_MS,
+        DEFAULT_PAD_MS,
+        DEFAULT_TARGET_PEAK_DBFS,
+        clip_and_normalize,
+        detect_speech_segments,
+    )
+
+    sr = 22050
+    sil = np.zeros((int(sr * 0.8), 1), dtype=np.float32)
+    t = np.arange(int(sr * 1.0), dtype=np.float32) / sr
+    tone = (0.25 * np.sin(2.0 * np.pi * 440.0 * t))[:, np.newaxis]
+    signal = np.vstack([sil, tone, sil])
+
+    segs, floor_db, has_bed = detect_speech_segments(signal, sr)
+    assert len(segs) == 1
+    assert has_bed is False
+    assert abs(segs[0].start_sec - 0.8) <= 0.03
+    assert abs(segs[0].end_sec - 1.8) <= 0.03
+
+    clipped = clip_and_normalize(
+        signal,
+        sr,
+        pad_ms=DEFAULT_PAD_MS,
+        fade_ms=DEFAULT_FADE_MS,
+        target_peak_dbfs=DEFAULT_TARGET_PEAK_DBFS,
+    )
+    dur = len(clipped) / sr
+    expected_dur = 1.0 + 2.0 * (DEFAULT_PAD_MS / 1000.0)
+    assert abs(dur - expected_dur) <= 0.04, f"Expected ~{expected_dur:.3f}s, got {dur:.3f}s"
+
+    peak = float(np.max(np.abs(clipped)))
+    target_lin = 10.0 ** (DEFAULT_TARGET_PEAK_DBFS / 20.0)
+    assert 0.85 <= peak <= 0.92, f"Expected peak near {target_lin:.3f}, got {peak:.4f}"
+    # Verify anti-click fades start and end cleanly at zero
+    assert abs(float(clipped[0, 0])) < 1e-4
+    assert abs(float(clipped[-1, 0])) < 1e-4
+
+
+def test_generated_voice_clips_exist_and_are_valid_wav() -> None:
+    """Every generated per-bot greeting, match, and Cebuano reaction WAV clip exists and has valid PCM audio."""
+    from others.config import VOICE_DIR
+    from ui.speech_bubble import load_speech_lines
+
+    expected_lines = [line for line in load_speech_lines() if line.audio is None]
+    assert len(expected_lines) >= 21
+
+    for line in expected_lines:
+        for bot_id in line.bots:
+            wav_path = VOICE_DIR / bot_id / f"{line.id}.wav"
+            assert wav_path.is_file(), f"Missing generated voice clip: {wav_path}"
+            with wave.open(str(wav_path), "rb") as wf:
+                assert wf.getnchannels() == 1
+                assert wf.getsampwidth() == 2
+                assert wf.getframerate() == 22050
+                dur = wf.getnframes() / wf.getframerate()
+            assert dur >= 0.45, f"Voice clip unexpectedly short ({dur:.2f}s): {wav_path}"

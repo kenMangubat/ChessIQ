@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "lines": [
+    {
+      "id": "greeting",
+      "bots": ["sick_ken"],
+      "event": "GREETING",
+      "text": "Bai gihilantan ko, pildiha daw ko bi",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 20,
+      "cooldown": 0.0
+    },
+    {
+      "id": "greeting",
+      "bots": ["focus_ken"],
+      "event": "GREETING",
+      "text": "Ha?? sure ka makig duwa ka nako",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 20,
+      "cooldown": 0.0
+    },
+    {
+      "id": "greeting",
+      "bots": ["condition_ken"],
+      "event": "GREETING",
+      "text": "hmmm dependi kong 3 yan!",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 20,
+      "cooldown": 0.0
+    },
+    {
+      "id": "blunder_walang_kanin",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_BLUNDER",
+      "text": "Walang kanin Buseng!",
+      "audio": "walang_kanin_buseng.wav",
+      "weight": 1.4,
+      "priority": 100,
+      "cooldown": 0.0
+    },
+    {
+      "id": "blunder_bossing",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_BLUNDER",
+      "text": "Oyy bossing kamusta kabuhay buhay",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 100,
+      "cooldown": 0.0
+    },
+    {
+      "id": "blunder_esmeringhoy",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_BLUNDER",
+      "text": "Nahhh ma esmeringhoy na imong position ron",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 100,
+      "cooldown": 0.0
+    },
+    {
+      "id": "mistake_sayop",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_MISTAKE",
+      "text": "Sayop man ka buseng!",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 75,
+      "cooldown": 0.0
+    },
+    {
+      "id": "mistake_pataka",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_MISTAKE",
+      "text": "Nag pataka raman kag tira oy",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 75,
+      "cooldown": 0.0
+    },
+    {
+      "id": "mistake_bushet",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_MISTAKE",
+      "text": "Bushet manang tiraha oy",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 75,
+      "cooldown": 0.0
+    },
+    {
+      "id": "dubious_sure_ka",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_DUBIOUS",
+      "text": "Ha? sure ka ana",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 55,
+      "cooldown": 0.0
+    },
+    {
+      "id": "dubious_wa_ka",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_DUBIOUS",
+      "text": "Wa ka ma bo...",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 55,
+      "cooldown": 0.0
+    },
+    {
+      "id": "dubious_mura_sakto",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_DUBIOUS",
+      "text": "Ahhh mura mag sakto",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 55,
+      "cooldown": 0.0
+    },
+    {
+      "id": "great_pa_kiss",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_GREAT",
+      "text": "Woww pa kiss ko bi",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 80,
+      "cooldown": 0.0
+    },
+    {
+      "id": "great_grabe_sir",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_GREAT",
+      "text": "Grabe sirr ayaw ana sir",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 80,
+      "cooldown": 0.0
+    },
+    {
+      "id": "brilliant_omg",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_BRILLIANT",
+      "text": "OMG! unsa mana tiraha oy",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 95,
+      "cooldown": 0.0
+    },
+    {
+      "id": "brilliant_cheer",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_BRILLIANT",
+      "text": "Briliianttttt",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 95,
+      "cooldown": 0.0
+    },
+    {
+      "id": "brilliant_nakita",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PLAYER_BRILLIANT",
+      "text": "Ahh shet shet nakita ako",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 95,
+      "cooldown": 0.0
+    },
+    {
+      "id": "check",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "CHECK",
+      "text": "Check! Watch the king.",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 60,
+      "cooldown": 10.0
+    },
+    {
+      "id": "promotion",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "PROMOTION",
+      "text": "Fresh queen on the board!",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 60,
+      "cooldown": 8.0
+    },
+    {
+      "id": "heavy_capture",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "HEAVY_CAPTURE",
+      "text": "Heavy piece off the board!",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 45,
+      "cooldown": 10.0
+    },
+    {
+      "id": "castle",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "CASTLE",
+      "text": "King safely tucked away.",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 45,
+      "cooldown": 12.0
+    },
+    {
+      "id": "draw",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "DRAW",
+      "text": "Good game! Solid draw.",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 90,
+      "cooldown": 0.0
+    },
+    {
+      "id": "bot_loss",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "LOSS",
+      "text": "Nice game! You got me that time.",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 90,
+      "cooldown": 0.0
+    },
+    {
+      "id": "bot_win",
+      "bots": ["sick_ken", "focus_ken", "condition_ken"],
+      "event": "WIN",
+      "text": "GG! Want a rematch?",
+      "audio": null,
+      "weight": 1.0,
+      "priority": 90,
+      "cooldown": 0.0
+    }
+  ]
+}

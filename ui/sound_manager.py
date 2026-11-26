@@ -12,7 +12,7 @@ from pathlib import Path
 import chess
 import pygame
 
-from others.config import BG_MUSIC_PATH, SOUNDS_DIR
+from others.config import BG_MUSIC_PATH, SOUNDS_DIR, VOICE_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -79,8 +79,10 @@ class SoundManager:
         muted: bool = False,
         music_path: Path | None = None,
         music_volume_ratio: float = DEFAULT_MUSIC_VOLUME_RATIO,
+        voice_dir: Path | None = None,
     ) -> None:
         self._sounds_dir: Path = sounds_dir if sounds_dir is not None else SOUNDS_DIR
+        self._voice_dir: Path = voice_dir if voice_dir is not None else VOICE_DIR
         self._music_path: Path = music_path if music_path is not None else BG_MUSIC_PATH
         self._volume: float = self._clamp_volume(volume)
         self._music_volume_ratio: float = self._clamp_volume(music_volume_ratio)
@@ -88,10 +90,14 @@ class SoundManager:
         self._available: bool = False
         self._music_playing: bool = False
         self._sounds: dict[str, pygame.mixer.Sound] = {}
+        self._voice_cache: dict[Path, pygame.mixer.Sound | None] = {}
+        self._warned_voice_paths: set[str] = set()
+        self._voice_channel: pygame.mixer.Channel | None = None
 
         self._init_mixer()
         if self._available:
             self._preload_sounds()
+            self._init_voice_channel()
 
     @staticmethod
     def _clamp_volume(volume: float) -> float:
@@ -196,19 +202,151 @@ class SoundManager:
             pass
         self._music_playing = False
 
+    def _init_voice_channel(self) -> None:
+        """Reserve one dedicated mixer channel for non-overlapping bot voice clips."""
+        try:
+            if pygame.mixer.get_num_channels() < 8:
+                pygame.mixer.set_num_channels(8)
+            pygame.mixer.set_reserved(1)
+            self._voice_channel = pygame.mixer.Channel(0)
+            self._voice_channel.set_volume(0.0 if self._muted else self._volume)
+        except pygame.error as exc:
+            logger.debug("Could not reserve dedicated voice channel (%s).", exc)
+            self._voice_channel = None
+
+    def resolve_voice_path(
+        self,
+        bot_id: str,
+        line_id: str,
+        explicit_audio: str | None = None,
+    ) -> Path | None:
+        """Locate an existing voice clip using explicit override or ``<bot_id>/<line_id>.(wav|ogg)``."""
+        candidates: list[Path] = []
+        if explicit_audio:
+            rel = Path(explicit_audio)
+            candidates.append(rel if rel.is_absolute() else self._voice_dir / rel)
+        for ext in (".wav", ".ogg"):
+            candidates.append(self._voice_dir / bot_id / f"{line_id}{ext}")
+            candidates.append(self._voice_dir / f"{line_id}{ext}")
+        for path in candidates:
+            if path.is_file():
+                return path
+        return None
+
+    def _get_voice_sound(self, path: Path) -> pygame.mixer.Sound | None:
+        """Load and cache a voice ``pygame.mixer.Sound`` once; warn once on failure."""
+        if path in self._voice_cache:
+            return self._voice_cache[path]
+        try:
+            sound = pygame.mixer.Sound(str(path))
+            sound.set_volume(self._volume)
+            self._voice_cache[path] = sound
+            return sound
+        except (pygame.error, OSError) as exc:
+            key = str(path)
+            if key not in self._warned_voice_paths:
+                self._warned_voice_paths.add(key)
+                logger.warning("Failed to load voice clip %s: %s", path.name, exc)
+            self._voice_cache[path] = None
+            return None
+
+    def play_voice(
+        self,
+        bot_id: str,
+        line_id: str,
+        explicit_audio: str | None = None,
+    ) -> bool:
+        """Play a cached bot voice clip on the dedicated voice channel without blocking.
+
+        Returns True if audio playback started, False if muted, mixer unavailable,
+        or clip missing (silent graceful fallback with at most one warning per clip).
+        """
+        if self._muted or self._volume <= 0.0 or not self._available:
+            return False
+
+        voice_path = self.resolve_voice_path(bot_id, line_id, explicit_audio=explicit_audio)
+        if voice_path is None:
+            if explicit_audio and explicit_audio not in self._warned_voice_paths:
+                self._warned_voice_paths.add(explicit_audio)
+                logger.warning(
+                    "Voice clip '%s' not found under %s; showing bubble silently.",
+                    explicit_audio,
+                    self._voice_dir,
+                )
+            return False
+
+        sound = self._get_voice_sound(voice_path)
+        if sound is None:
+            return False
+
+        try:
+            sound.set_volume(self._volume)
+            if self._voice_channel is not None:
+                self._voice_channel.stop()
+                self._voice_channel.set_volume(self._volume)
+                self._voice_channel.play(sound)
+                return True
+            ch = sound.play()
+            if ch is not None:
+                self._voice_channel = ch
+                return True
+            return False
+        except pygame.error as exc:
+            key = f"play:{voice_path}"
+            if key not in self._warned_voice_paths:
+                self._warned_voice_paths.add(key)
+                logger.warning("Voice playback failed for %s: %s", voice_path.name, exc)
+            return False
+
+    def is_voice_playing(self) -> bool:
+        """Return True while the dedicated bot voice channel is actively playing."""
+        if not self._available or self._voice_channel is None:
+            return False
+        try:
+            return bool(self._voice_channel.get_busy())
+        except pygame.error:
+            return False
+
+    def stop_voice(self) -> None:
+        """Stop any currently playing bot voice clip immediately."""
+        if not self._available or self._voice_channel is None:
+            return
+        try:
+            self._voice_channel.stop()
+        except pygame.error:
+            pass
+
     def set_volume(self, volume: float) -> None:
-        """Set playback volume in [0.0, 1.0] for all pre-loaded clips and music."""
+        """Set playback volume in [0.0, 1.0] for all pre-loaded clips, voice, and music."""
         self._volume = self._clamp_volume(volume)
         for sound in self._sounds.values():
             try:
                 sound.set_volume(self._volume)
             except pygame.error:
                 pass
+        for v_sound in self._voice_cache.values():
+            if v_sound is not None:
+                try:
+                    v_sound.set_volume(self._volume)
+                except pygame.error:
+                    pass
+        if self._voice_channel is not None and self._available:
+            try:
+                self._voice_channel.set_volume(0.0 if self._muted else self._volume)
+            except pygame.error:
+                pass
         self._sync_music_volume()
 
     def toggle_mute(self) -> bool:
-        """Toggle mute state for SFX and background music and return the new value."""
+        """Toggle mute state for SFX, voice clips, and background music."""
         self._muted = not self._muted
+        if self._muted:
+            self.stop_voice()
+        elif self._voice_channel is not None and self._available:
+            try:
+                self._voice_channel.set_volume(self._volume)
+            except pygame.error:
+                pass
         self._sync_music_volume()
         return self._muted
 

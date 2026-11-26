@@ -8,7 +8,10 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 ASSETS_DIR = BASE_DIR / "assets"
 ICONS_DIR = ASSETS_DIR / "icons"
 SOUNDS_DIR = ASSETS_DIR / "sounds"
+VOICE_DIR = SOUNDS_DIR / "voice"
 BG_MUSIC_PATH = SOUNDS_DIR / "bg_music.ogg"
+BLUNDER_SOURCE_AUDIO_PATH = ASSETS_DIR / "walang kanen buseng.mp3"
+BLUNDER_CLIP_PATH = VOICE_DIR / "walang_kanin_buseng.wav"
 DATA_DIR = BASE_DIR / "data"
 ENGINE_DIR = BASE_DIR / "engine"
 
@@ -55,6 +58,7 @@ def get_stockfish_path() -> Path | None:
 BOOK_DB_PATH = DATA_DIR / "ken_book.db"
 STYLE_PROFILE_PATH = DATA_DIR / "ken_style_profile.json"
 OPENINGS_TSV_PATH = DATA_DIR / "chess_openings.tsv"
+SPEECH_LINES_PATH = DATA_DIR / "speech_lines.json"
 
 # Offline bot calibration output files
 CALIBRATION_JSON_PATH = DATA_DIR / "calibration_results.json"

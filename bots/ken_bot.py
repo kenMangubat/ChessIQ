@@ -45,11 +45,23 @@ from calibration.style_analyzer import (
 )
 from others.config import BOOK_DB_PATH, PROVENANCE_LOG_DIR, STYLE_PROFILE_PATH
 from engine.stockfish_engine import EngineNotFoundError, StockfishEngine
+from ui.speech_bubble import get_greeting_text
 
 logger = logging.getLogger(__name__)
 
 _MAX_PROVENANCE_LOG_FILES = 30
 _MAX_PROVENANCE_LOG_BYTES = 2 * 1024 * 1024  # 2 MB per session file
+
+# ── Human move-quality & blunder evaluation thresholds (centipawns) ──
+BLUNDER_CP_LOSS: int = 200              # >= 200 cp loss (or newly allowed mate) = Blunder
+MISTAKE_CP_LOSS: int = 115              # 115..199 cp loss = Mistake
+DUBIOUS_CP_LOSS: int = 55               # 55..114 cp loss = Dubious / Inaccuracy
+GREAT_ONLY_MOVE_GAP_CP: int = 160       # Best move beats 2nd-best by >= 160 cp = Great
+BRILLIANT_GAP_CP: int = 150             # Sacrificial best move beating 2nd-best by >= 150 cp = Brilliant
+BEST_MOVE_TOLERANCE_CP: int = 15        # Within 15 cp of engine top-1 counts as best
+DECIDED_EVAL_CP: int = 800              # Skip positions already completely decided in same direction
+PLAYER_EVAL_TIME_LIMIT: float = 0.12    # Fast full-strength Stockfish analysis per position (s)
+PLAYER_EVAL_CACHE_MAX: int = 256        # Bounded EPD evaluation cache inside BotWorker
 
 
 @dataclass(frozen=True)
@@ -88,7 +100,7 @@ KEN_PROFILES: dict[str, KenProfile] = {
         engine_multipv=10,
         engine_temp=1.15,
         blunder_chance=0.25,
-        tagline="Bai gihilantan ko, pildiha daw ko bi",
+        tagline=get_greeting_text("sick_ken", "Bai gihilantan ko, pildiha daw ko bi"),
         description="A weaker take on your style,\nwith occasional tactical errors.",
         max_cp_loss=175,
         mistake_max_cp_loss=245,
@@ -110,7 +122,7 @@ KEN_PROFILES: dict[str, KenProfile] = {
         engine_multipv=9,
         engine_temp=0.90,
         blunder_chance=0.08,
-        tagline="Ha?? sure ka makig duwa ka nako",
+        tagline=get_greeting_text("focus_ken", "Ha?? sure ka makig duwa ka nako"),
         description="Consistent decisions and\nyour familiar openings.",
         max_cp_loss=125,
         mistake_max_cp_loss=210,
@@ -132,7 +144,7 @@ KEN_PROFILES: dict[str, KenProfile] = {
         engine_multipv=8,
         engine_temp=0.78,
         blunder_chance=0.0,
-        tagline="hmmm dependi kong 3 yan!",
+        tagline=get_greeting_text("condition_ken", "hmmm dependi kong 3 yan!"),
         description="Advanced tactical and\npositional precision.",
         max_cp_loss=78,
         mistake_max_cp_loss=145,
@@ -845,15 +857,209 @@ class KenBot:
         self._engine.stop()
 
 
+@dataclass(frozen=True)
+class PositionEval:
+    """Full-strength engine evaluation snapshot from side-to-move's perspective."""
+
+    best_cp: int
+    second_best_cp: int | None
+    best_mate: int | None
+    best_uci: str | None
+
+
+@dataclass(frozen=True)
+class PlayerMoveEvaluation:
+    """Classified human move result emitted asynchronously by BotWorker."""
+
+    generation: int
+    move_ply: int
+    player_move_number: int
+    event: str | None
+    cp_loss: int
+
+
+def classify_blunder(
+    eval_before_cp: int,
+    eval_after_cp: int,
+    mate_before: int | None = None,
+    mate_after: int | None = None,
+    mover_color: chess.Color = chess.WHITE,
+    *,
+    scores_from_white: bool = False,
+) -> bool:
+    """Return True if the human mover's move was a blunder from their perspective.
+
+    Rules:
+    - If ``scores_from_white=True``, converts White-POV centipawns & mate scores to
+      mover's POV (negating when ``mover_color == chess.BLACK``). Otherwise expects
+      scores already expressed from the mover's perspective.
+    - Allows a forced mate against the mover that was not there before -> True.
+    - Throws away a forced mate for the mover into a non-winning eval (< 200 cp) -> True.
+    - Skips positions already decided (``|eval| >= DECIDED_EVAL_CP`` in the same
+      direction both before and after) unless a new forced mate against was allowed.
+    - Loses ``>= BLUNDER_CP_LOSS`` (200 cp) versus best play -> True.
+    """
+    sign = -1 if (scores_from_white and mover_color == chess.BLACK) else 1
+    before_cp = int(eval_before_cp) * sign
+    after_cp = int(eval_after_cp) * sign
+    m_before = (-int(mate_before) if mate_before is not None else None) if sign < 0 else mate_before
+    m_after = (-int(mate_after) if mate_after is not None else None) if sign < 0 else mate_after
+
+    # Allowing a forced mate that was not forced before is always a blunder
+    had_mate_against = m_before is not None and m_before < 0
+    now_mate_against = m_after is not None and m_after < 0
+    if now_mate_against and not had_mate_against:
+        return True
+
+    # Skip positions already completely decided in the same direction (mop-up phase)
+    if (
+        abs(before_cp) >= DECIDED_EVAL_CP
+        and abs(after_cp) >= DECIDED_EVAL_CP
+        and (before_cp > 0) == (after_cp > 0)
+    ):
+        return False
+
+    # Throwing away a forced mating sequence into an unclear/losing position
+    if m_before is not None and m_before > 0 and m_after is None and after_cp < 200:
+        return True
+
+    return (before_cp - after_cp) >= BLUNDER_CP_LOSS
+
+
+def is_tactical_sacrifice(board_before: chess.Board, move: chess.Move) -> bool:
+    """Heuristic check for a real tactical piece sacrifice (used for Brilliant detection)."""
+    mover_color = board_before.turn
+    opp_color = not mover_color
+    moving_piece = board_before.piece_at(move.from_square)
+    if moving_piece is None:
+        return False
+
+    captured_piece = board_before.piece_at(move.to_square)
+    captured_val = _PIECE_VALUES.get(captured_piece.piece_type, 0) if captured_piece else 0
+    moving_val = _PIECE_VALUES.get(moving_piece.piece_type, 0)
+
+    board_after = board_before.copy(stack=False)
+    board_after.push(move)
+
+    # 1. Moving a minor/major piece onto an opponent-attacked square for less immediate gain
+    if moving_piece.piece_type in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN):
+        if board_after.is_attacked_by(opp_color, move.to_square):
+            attackers = board_after.attackers(opp_color, move.to_square)
+            cheapest_attacker = min(
+                (
+                    _PIECE_VALUES.get(board_after.piece_at(sq).piece_type, 20000)
+                    for sq in attackers
+                    if board_after.piece_at(sq) is not None
+                ),
+                default=20000,
+            )
+            defended = board_after.is_attacked_by(mover_color, move.to_square)
+            if (not defended and moving_val > captured_val + 100) or (
+                cheapest_attacker < moving_val and moving_val > captured_val + 100
+            ):
+                return True
+
+    # 2. Quiet/tactical move leaving another friendly non-pawn piece newly en prise
+    for sq in chess.SQUARES:
+        if sq == move.to_square:
+            continue
+        p = board_after.piece_at(sq)
+        if p is None or p.color != mover_color:
+            continue
+        if p.piece_type not in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN):
+            continue
+        val = _PIECE_VALUES.get(p.piece_type, 0)
+        if val <= captured_val + 100:
+            continue
+        if board_after.is_attacked_by(opp_color, sq) and not board_after.is_attacked_by(
+            mover_color, sq
+        ):
+            if not board_before.is_attacked_by(opp_color, sq):
+                return True
+
+    return False
+
+
+def classify_player_move(
+    eval_before_cp: int,
+    eval_after_cp: int,
+    *,
+    mate_before: int | None = None,
+    mate_after: int | None = None,
+    second_best_cp: int | None = None,
+    mover_color: chess.Color = chess.WHITE,
+    scores_from_white: bool = False,
+    is_sacrifice: bool = False,
+    ply: int = 10,
+    legal_move_count: int = 10,
+) -> str | None:
+    """Classify a human move into one of the bot reaction event categories or ``None``.
+
+    Possible return values:
+      ``'PLAYER_BLUNDER'``, ``'PLAYER_MISTAKE'``, ``'PLAYER_DUBIOUS'``,
+      ``'PLAYER_BRILLIANT'``, ``'PLAYER_GREAT'``, or ``None``.
+    """
+    if classify_blunder(
+        eval_before_cp,
+        eval_after_cp,
+        mate_before=mate_before,
+        mate_after=mate_after,
+        mover_color=mover_color,
+        scores_from_white=scores_from_white,
+    ):
+        return "PLAYER_BLUNDER"
+
+    sign = -1 if (scores_from_white and mover_color == chess.BLACK) else 1
+    before_cp = int(eval_before_cp) * sign
+    after_cp = int(eval_after_cp) * sign
+    sec_cp = (int(second_best_cp) * sign) if second_best_cp is not None else None
+    m_after = (-int(mate_after) if mate_after is not None else None) if sign < 0 else mate_after
+
+    # Skip positions already completely decided in the same direction
+    if (
+        abs(before_cp) >= DECIDED_EVAL_CP
+        and abs(after_cp) >= DECIDED_EVAL_CP
+        and (before_cp > 0) == (after_cp > 0)
+    ):
+        return None
+
+    cp_loss = max(0, before_cp - after_cp)
+    if cp_loss >= MISTAKE_CP_LOSS:
+        return "PLAYER_MISTAKE"
+    if cp_loss >= DUBIOUS_CP_LOSS:
+        return "PLAYER_DUBIOUS"
+
+    # Positive accolades require non-forced, post-opening tactical accuracy
+    if legal_move_count < 3 or cp_loss > BEST_MOVE_TOLERANCE_CP or after_cp < -50:
+        return None
+
+    best_gap = (before_cp - sec_cp) if sec_cp is not None else 0
+
+    if ply >= 8 and is_sacrifice and before_cp < 650:
+        if best_gap >= BRILLIANT_GAP_CP or (
+            m_after is not None and m_after >= 2 and (sec_cp is None or sec_cp < 300)
+        ):
+            return "PLAYER_BRILLIANT"
+
+    if ply >= 6 and abs(before_cp) < 700 and sec_cp is not None and best_gap >= GREAT_ONLY_MOVE_GAP_CP:
+        return "PLAYER_GREAT"
+
+    return None
+
+
 class BotWorker:
-    """Non-blocking background thread worker to compute bot moves without freezing Pygame."""
+    """Non-blocking background thread worker for bot moves and full-strength player-move eval."""
 
     def __init__(self, bot: KenBot) -> None:
         self.bot = bot
-        self._request_queue: queue.Queue[tuple[chess.Board | None, float]] = queue.Queue()
+        self._request_queue: queue.Queue[
+            tuple[str, chess.Board | None, float, dict[str, Any] | None]
+        ] = queue.Queue()
         self._result_queue: queue.Queue[
             tuple[chess.Move | None, Exception | None, str, float]
         ] = queue.Queue()
+        self._eval_result_queue: queue.Queue[PlayerMoveEvaluation] = queue.Queue()
+        self._eval_cache: dict[str, PositionEval] = {}
         self._stop_event = threading.Event()
         self._is_computing = threading.Event()
         self.last_move_source: str = "none"
@@ -863,13 +1069,26 @@ class BotWorker:
         )
         self._thread.start()
 
-    def request_move(self, board: chess.Board, delay_seconds: float = 0.0) -> None:
-        """Submit a board position to compute a move in the background."""
+    def request_move(
+        self,
+        board: chess.Board,
+        delay_seconds: float = 0.0,
+        player_move_context: dict[str, Any] | None = None,
+    ) -> None:
+        """Submit a board position to compute a bot move (and optional post-move player eval)."""
         self._is_computing.set()
-        self._request_queue.put((board.copy(), delay_seconds))
+        self._request_queue.put(("move", board.copy(), delay_seconds, player_move_context))
+
+    def request_position_eval(self, board: chess.Board) -> None:
+        """Pre-evaluate a human-to-move position in the background while idle."""
+        if board.is_game_over():
+            return
+        if board.epd() in self._eval_cache:
+            return
+        self._request_queue.put(("pre_eval", board.copy(stack=False), 0.0, None))
 
     def poll_move(self) -> chess.Move | None:
-        """Poll for a computed move non-blockingly. Returns Move or None."""
+        """Poll for a computed bot move non-blockingly. Returns Move or None."""
         try:
             move, exc, source, compute_s = self._result_queue.get_nowait()
             self._is_computing.clear()
@@ -881,24 +1100,154 @@ class BotWorker:
         except queue.Empty:
             return None
 
+    def poll_player_eval(self) -> PlayerMoveEvaluation | None:
+        """Poll non-blockingly for an asynchronously classified human move evaluation."""
+        try:
+            return self._eval_result_queue.get_nowait()
+        except queue.Empty:
+            return None
+
     @property
     def is_thinking(self) -> bool:
-        """Return True if the worker is actively computing or has pending requests."""
-        return self._is_computing.is_set() or not self._request_queue.empty()
+        """Return True if the worker is actively computing or has pending bot move requests."""
+        return self._is_computing.is_set()
 
     def stop(self) -> None:
         """Signal the worker to terminate and wait briefly for thread exit."""
         self._stop_event.set()
-        self._request_queue.put((None, 0.0))
+        self._request_queue.put(("stop", None, 0.0, None))
         if self._thread.is_alive():
             self._thread.join(timeout=1.0)
         self.bot.close()
+
+    def _cache_put(self, epd: str, pos_eval: PositionEval) -> None:
+        if len(self._eval_cache) >= PLAYER_EVAL_CACHE_MAX and epd not in self._eval_cache:
+            oldest_key = next(iter(self._eval_cache))
+            self._eval_cache.pop(oldest_key, None)
+        self._eval_cache[epd] = pos_eval
+
+    def _evaluate_full_strength(
+        self, board: chess.Board, *, multipv: int = 2
+    ) -> PositionEval | None:
+        """Run or retrieve cached full-strength Stockfish eval (uci_elo=None) on worker thread."""
+        epd = board.epd()
+        cached = self._eval_cache.get(epd)
+        if cached is not None and (multipv == 1 or cached.second_best_cp is not None):
+            return cached
+        if board.is_game_over():
+            if board.is_checkmate():
+                res = PositionEval(best_cp=-10000, second_best_cp=None, best_mate=0, best_uci=None)
+            else:
+                res = PositionEval(best_cp=0, second_best_cp=None, best_mate=None, best_uci=None)
+            self._cache_put(epd, res)
+            return res
+
+        try:
+            cands = self.bot.engine.analyse_candidates(
+                board,
+                multipv=multipv,
+                time_limit=PLAYER_EVAL_TIME_LIMIT,
+                uci_elo=None,  # Full uncapped strength independent of bot Elo
+            )
+        except Exception:
+            return None
+        if not cands:
+            return None
+
+        cands_sorted = sorted(cands, key=lambda c: int(c["score_cp"]), reverse=True)
+        top = cands_sorted[0]
+        second_cp = int(cands_sorted[1]["score_cp"]) if len(cands_sorted) > 1 else None
+        res = PositionEval(
+            best_cp=int(top["score_cp"]),
+            second_best_cp=second_cp,
+            best_mate=top.get("mate"),
+            best_uci=str(top.get("uci")) if top.get("uci") else None,
+        )
+        self._cache_put(epd, res)
+        return res
+
+    def _cache_bot_candidates(self, board: chess.Board) -> None:
+        """Reuse full-strength candidates just computed by KenBot to avoid redundant searches."""
+        prov = self.bot.last_move_provenance
+        cands = prov.get("candidates") if isinstance(prov, dict) else None
+        if not cands:
+            return
+        try:
+            ordered = sorted(cands, key=lambda c: int(c["score_cp"]), reverse=True)
+            top = ordered[0]
+            second_cp = int(ordered[1]["score_cp"]) if len(ordered) > 1 else None
+            self._cache_put(
+                board.epd(),
+                PositionEval(
+                    best_cp=int(top["score_cp"]),
+                    second_best_cp=second_cp,
+                    best_mate=top.get("mate"),
+                    best_uci=str(top.get("uci")) if top.get("uci") else None,
+                ),
+            )
+        except Exception:
+            pass
+
+    def _evaluate_player_move_context(
+        self, board_after: chess.Board, ctx: dict[str, Any]
+    ) -> None:
+        """Evaluate the human's move at full strength and publish any reaction event."""
+        if self._stop_event.is_set():
+            return
+        try:
+            board_before = chess.Board(str(ctx["board_before_fen"]))
+            move = chess.Move.from_uci(str(ctx["move_uci"]))
+        except Exception:
+            return
+
+        legal_count = sum(1 for _ in board_before.legal_moves)
+        eval_before = self._evaluate_full_strength(board_before, multipv=2)
+        if eval_before is None or self._stop_event.is_set():
+            return
+
+        eval_after_opp = self._evaluate_full_strength(board_after, multipv=1)
+        if eval_after_opp is None or self._stop_event.is_set():
+            return
+
+        # Convert opponent-to-move score after human's move into human mover's POV
+        after_mover_cp = -eval_after_opp.best_cp
+        if board_after.is_checkmate():
+            # Human delivered checkmate!
+            after_mover_mate: int | None = 1
+        elif eval_after_opp.best_mate is not None:
+            after_mover_mate = -int(eval_after_opp.best_mate)
+        else:
+            after_mover_mate = None
+
+        sac = is_tactical_sacrifice(board_before, move)
+        event = classify_player_move(
+            eval_before.best_cp,
+            after_mover_cp,
+            mate_before=eval_before.best_mate,
+            mate_after=after_mover_mate,
+            second_best_cp=eval_before.second_best_cp,
+            mover_color=board_before.turn,
+            scores_from_white=False,
+            is_sacrifice=sac,
+            ply=int(ctx.get("move_ply", 0)),
+            legal_move_count=legal_count,
+        )
+        cp_loss = max(0, eval_before.best_cp - after_mover_cp)
+        self._eval_result_queue.put(
+            PlayerMoveEvaluation(
+                generation=int(ctx["generation"]),
+                move_ply=int(ctx["move_ply"]),
+                player_move_number=int(ctx["player_move_number"]),
+                event=event,
+                cp_loss=cp_loss,
+            )
+        )
 
     def _run(self) -> None:
         engine_warmed = False
         while not self._stop_event.is_set():
             try:
-                board, delay = self._request_queue.get(timeout=0.05)
+                kind, board, delay, ctx = self._request_queue.get(timeout=0.05)
             except queue.Empty:
                 # Silently pre-warm Stockfish while idle so the first out-of-book move has no hitch
                 if not engine_warmed and not self._stop_event.is_set():
@@ -909,15 +1258,28 @@ class BotWorker:
                         pass
                 continue
 
-            if self._stop_event.is_set() or board is None:
+            if self._stop_event.is_set() or kind == "stop" or board is None:
                 break
 
+            if kind == "pre_eval":
+                # Skip stale pre-eval if a real bot move request is already waiting
+                if self._request_queue.empty():
+                    self._evaluate_full_strength(board, multipv=2)
+                continue
+
+            # kind == "move": compute and emit bot reply FIRST so bot pacing is never delayed
             try:
                 t_start = time.perf_counter()
                 if delay > 0:
                     time.sleep(delay)
                 move = self.bot.choose_move(board)
                 elapsed = time.perf_counter() - t_start
+                self._cache_bot_candidates(board)
                 self._result_queue.put((move, None, self.bot.last_move_source, elapsed))
             except Exception as exc:
                 self._result_queue.put((None, exc, "error", 0.0))
+                continue
+
+            # Evaluate the human's move right after releasing the bot move (reusing cached scores)
+            if ctx is not None and not self._stop_event.is_set():
+                self._evaluate_player_move_context(board, ctx)
