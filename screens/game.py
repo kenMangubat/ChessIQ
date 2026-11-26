@@ -317,6 +317,30 @@ DIALOG_SECONDARY_HOVER = (78, 74, 70)
 DIALOG_ROBOT_ACCENT = (245, 178, 42)     # golden-orange robot accent
 DIALOG_ROBOT_ICON_FILE = "chessiq-robot.png"
 
+# ── Chess.com-inspired Resign Confirmation Popover constants ─────────
+RESIGN_CONFIRM_ANIM_DURATION = 0.16     # snappy 160ms fade + subtle float-up
+RESIGN_CONFIRM_SLIDE_PX = 8
+RESIGN_CONFIRM_SCALE_START = 0.96
+RESIGN_CONFIRM_BG_TOP = (50, 48, 45)        # #32302D warm elevated charcoal
+RESIGN_CONFIRM_BG_BOT = (40, 38, 36)        # #282624 warm deep charcoal
+RESIGN_CONFIRM_BORDER = (80, 76, 72)        # #504C48 refined warm outline
+RESIGN_CONFIRM_SPECULAR = (96, 91, 86, 130) # subtle top specular edge
+RESIGN_CONFIRM_TEXT = (245, 245, 244)       # #F5F5F4 crisp title text
+RESIGN_CANCEL_TOP = (72, 69, 65)            # #484541 neutral dark button
+RESIGN_CANCEL_BOT = (58, 55, 52)            # #3A3734 subtle gradient bottom
+RESIGN_CANCEL_HOVER_TOP = (86, 82, 78)
+RESIGN_CANCEL_HOVER_BOT = (72, 69, 65)
+RESIGN_CANCEL_BORDER = (94, 90, 85)
+RESIGN_CANCEL_SHADOW = (26, 24, 23)
+RESIGN_CANCEL_TEXT = (232, 229, 224)
+RESIGN_DANGER_TOP = (236, 62, 52)           # #EC3E34 modern Chess.com crimson
+RESIGN_DANGER_BOT = (206, 36, 28)           # #CE241C rich crimson bottom
+RESIGN_DANGER_HOVER_TOP = (248, 76, 66)
+RESIGN_DANGER_HOVER_BOT = (220, 44, 36)
+RESIGN_DANGER_BORDER = (248, 108, 98)
+RESIGN_DANGER_SHADOW = (128, 20, 16)
+RESIGN_DANGER_TEXT = (255, 255, 255)
+
 
 def format_endgame_dialog_text(
     outcome: GameOutcome,
@@ -650,6 +674,8 @@ class GameScreen(BaseScreen):
         self._popup_anim_elapsed: float = 0.0
         self._popup_card_surface: pygame.Surface | None = None
         self._popup_shadow_surface: pygame.Surface | None = None
+        self._show_resign_confirm = False
+        self._resign_confirm_anim: float = 0.0
         self._opponent_image: str = str(opponent["image"])
         self._san_surface_cache: dict[tuple[str, bool, bool], pygame.Surface] = {}
         self._review_icon_cache: dict[tuple[str, int, tuple[int, int, int]], pygame.Surface] = {}
@@ -1272,6 +1298,7 @@ class GameScreen(BaseScreen):
 
         # ── endgame popup modal (responsive layout) ───────────────────
         self._build_endgame_dialog_layout()
+        self._build_resign_confirm_layout()
 
     @classmethod
     def _load_avatar(cls, filename: str, size: int) -> pygame.Surface:
@@ -1569,6 +1596,8 @@ class GameScreen(BaseScreen):
             if action is not None:
                 self._handle_menu_action(action)
                 continue
+            if self._menu.is_open and self._show_resign_confirm:
+                self._close_resign_confirm()
             if menu_was_open or self._menu.is_open:
                 continue
 
@@ -1660,12 +1689,22 @@ class GameScreen(BaseScreen):
         if self._game_started:
             for button in (
                 self._btn_resign,
+                self._btn_resign_cancel,
+                self._btn_resign_confirm,
                 self._btn_popup_rematch,
                 self._btn_popup_bots,
                 self._btn_popup_close,
                 *self._review_buttons.values(),
             ):
                 button.update(dt)
+            if self._show_resign_confirm:
+                if self._reduced_motion:
+                    self._resign_confirm_anim = 1.0
+                elif self._resign_confirm_anim < 1.0:
+                    step = clamped_dt / max(0.01, RESIGN_CONFIRM_ANIM_DURATION)
+                    self._resign_confirm_anim = min(1.0, self._resign_confirm_anim + step)
+            else:
+                self._resign_confirm_anim = 0.0
             self._board.update(dt)
             self._try_execute_premove()
             if self._pending_endgame_popup and not self._board.is_animating:
@@ -1717,6 +1756,7 @@ class GameScreen(BaseScreen):
             return self._time_dropdown_open
         return (
             self._board.promotion_pending
+            or self._show_resign_confirm
             or self._show_endgame_popup
             or self.is_reviewing
             or self._board.premove is not None
@@ -1768,6 +1808,8 @@ class GameScreen(BaseScreen):
         self._show_endgame_popup = False
         self._pending_endgame_popup = False
         self._popup_anim_elapsed = 0.0
+        self._show_resign_confirm = False
+        self._resign_confirm_anim = 0.0
         self._notice_text = None
         self._notice_timer = 0.0
         self._chat_text = self._opponent_tagline
@@ -1839,6 +1881,7 @@ class GameScreen(BaseScreen):
     def _refresh_result(self) -> None:
         """Lock the board, pause clocks, and reveal result UI once final animation finishes."""
         if self._game is not None and self._game.is_game_over:
+            self._close_resign_confirm()
             self._clock.pause()
             self._result_text = self._describe_outcome(self._game.outcome)
             if self._board.is_animating:
@@ -1900,13 +1943,32 @@ class GameScreen(BaseScreen):
         elif action == "dashboard":
             self.next_screen = "dashboard"
         elif action == "resign":
-            self._resign()
+            self._open_resign_confirm()
         elif action == "offer_draw":
             self._offer_draw()
+
+    @property
+    def is_resign_confirm_open(self) -> bool:
+        """True while the Chess.com-style resign confirmation popover is open."""
+        return self._show_resign_confirm
+
+    def _open_resign_confirm(self) -> None:
+        """Open the resign confirmation popover when a match is active."""
+        if not self._is_game_active:
+            return
+        self._board.cancel_drag()
+        self._show_resign_confirm = True
+        self._resign_confirm_anim = 1.0 if self._reduced_motion else 0.0
+
+    def _close_resign_confirm(self) -> None:
+        """Dismiss the resign confirmation popover."""
+        self._show_resign_confirm = False
+        self._resign_confirm_anim = 0.0
 
     def _resign(self) -> None:
         if not self._is_game_active:
             return
+        self._close_resign_confirm()
         assert self._game is not None
         self._game.resign("white" if self._player_color == chess.WHITE else "black")
         self._sound_manager.play("game_end")
@@ -1956,6 +2018,27 @@ class GameScreen(BaseScreen):
                     and self._popup_overlay_rect.collidepoint(event.pos)
                 ):
                     return
+
+        if self._show_resign_confirm:
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self._close_resign_confirm()
+                    return
+                return
+            if self._btn_resign_cancel.handle_event(event):
+                self._close_resign_confirm()
+                return
+            if self._btn_resign_confirm.handle_event(event):
+                self._resign()
+                return
+            if event.type == pygame.MOUSEMOTION:
+                return
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button in (1, 3):
+                if not self._resign_confirm_rect.collidepoint(event.pos):
+                    self._close_resign_confirm()
+                return
+            if event.type == pygame.MOUSEBUTTONUP:
+                return
 
         if self._handle_sidebar_match_event(event):
             return
@@ -2112,7 +2195,7 @@ class GameScreen(BaseScreen):
             if self._game is not None and self._game.is_game_over:
                 self._begin_new_game()
             else:
-                self._resign()
+                self._open_resign_confirm()
             return True
         return False
 
@@ -2497,6 +2580,12 @@ class GameScreen(BaseScreen):
 
         if self._game_started:
             self._draw_started_panel()
+            if (
+                self._show_resign_confirm
+                and not self._show_endgame_popup
+                and not self._menu.is_open
+            ):
+                self._draw_resign_confirm_popover()
         else:
             self._draw_setup_panel()
         self._menu.draw(self.screen)
@@ -4472,6 +4561,250 @@ class GameScreen(BaseScreen):
                     btn.draw(target)
                     target.blit(icon, icon.get_rect(center=btn.base_rect.center))
                 btn.base_rect = orig
+
+    def _build_resign_confirm_layout(self) -> None:
+        """Compute responsive Chess.com-style Resign Confirmation popover geometry & surfaces."""
+        margin = max(8, round(10 * self._scale))
+        anchor = self._btn_resign.base_rect
+        max_w = max(210, self.width - margin * 2)
+        card_w = min(max_w, max(250, anchor.width))
+
+        self._font_resign_title = _load_tc_font(max(13, round(15 * self._scale)), "bold")
+        self._font_resign_btn = _load_tc_font(max(12, round(14 * self._scale)), "bold")
+
+        pad_x = max(12, round(18 * self._scale))
+        pad_y = max(12, round(18 * self._scale))
+        text_btn_gap = max(12, round(16 * self._scale))
+        btn_gap = max(8, round(11 * self._scale))
+        btn_h = max(36, round(42 * self._scale))
+        inner_w = max(120, card_w - pad_x * 2)
+
+        title_lines = self._get_wrapped_lines(
+            "Are you sure you want to resign?",
+            self._font_resign_title,
+            RESIGN_CONFIRM_TEXT,
+            inner_w,
+        )
+        title_h = len(title_lines) * self._font_resign_title.get_linesize()
+        card_h = pad_y + title_h + text_btn_gap + btn_h + pad_y
+
+        gap_above = max(8, round(10 * self._scale))
+        card_rect = pygame.Rect(0, 0, card_w, card_h)
+        card_rect.midbottom = (anchor.centerx, anchor.top - gap_above)
+        card_rect.clamp_ip(
+            pygame.Rect(margin, margin, self.width - margin * 2, self.height - margin * 2)
+        )
+        self._resign_confirm_rect = card_rect
+        self._resign_confirm_pad_x = pad_x
+        self._resign_confirm_pad_y = pad_y
+        self._resign_confirm_radius = max(10, round(12 * self._scale))
+        self._resign_confirm_btn_radius = max(7, round(9 * self._scale))
+
+        btn_w = (inner_w - btn_gap) // 2
+        btn_y = card_rect.bottom - pad_y - btn_h
+        cancel_rect = pygame.Rect(card_rect.left + pad_x, btn_y, btn_w, btn_h)
+        confirm_rect = pygame.Rect(
+            cancel_rect.right + btn_gap, btn_y, inner_w - btn_w - btn_gap, btn_h
+        )
+        self._btn_resign_cancel = Button(
+            cancel_rect,
+            "Cancel",
+            self._font_resign_btn,
+            color=RESIGN_CANCEL_TOP,
+            hover_color=RESIGN_CANCEL_HOVER_TOP,
+            text_color=RESIGN_CANCEL_TEXT,
+            border_radius=self._resign_confirm_btn_radius,
+            border_color=RESIGN_CANCEL_BORDER,
+            border_width=1,
+            press_feedback=True,
+        )
+        self._btn_resign_confirm = Button(
+            confirm_rect,
+            "Resign",
+            self._font_resign_btn,
+            color=RESIGN_DANGER_TOP,
+            hover_color=RESIGN_DANGER_HOVER_TOP,
+            text_color=RESIGN_DANGER_TEXT,
+            border_radius=self._resign_confirm_btn_radius,
+            accent=True,
+            border_color=RESIGN_DANGER_BORDER,
+            border_width=1,
+            press_feedback=True,
+        )
+
+        # Pre-render soft layered elevation shadow and warm dark gradient card once
+        w, h = card_rect.size
+        shadow_pad = 16
+        shadow = pygame.Surface((w + shadow_pad * 2, h + shadow_pad * 2), pygame.SRCALPHA)
+        for spread, alpha, dy in ((12, 18, 6), (7, 30, 4), (3, 46, 2), (1, 64, 1)):
+            pygame.draw.rect(
+                shadow,
+                (10, 9, 8, alpha),
+                (
+                    shadow_pad - spread,
+                    shadow_pad - spread + dy,
+                    w + spread * 2,
+                    h + spread * 2,
+                ),
+                border_radius=self._resign_confirm_radius + spread,
+            )
+        self._resign_confirm_shadow = shadow
+
+        card_bg = pygame.Surface((w, h), pygame.SRCALPHA)
+        for y in range(h):
+            t = y / max(1, h - 1)
+            col = _lerp_tc_rgb(RESIGN_CONFIRM_BG_TOP, RESIGN_CONFIRM_BG_BOT, t)
+            pygame.draw.line(card_bg, (*col, 252), (0, y), (w - 1, y))
+        mask = pygame.Surface((w, h), pygame.SRCALPHA)
+        pygame.draw.rect(
+            mask, (255, 255, 255, 255), (0, 0, w, h), border_radius=self._resign_confirm_radius
+        )
+        card_bg.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        rad = self._resign_confirm_radius
+        if w > rad * 2 + 4:
+            pygame.draw.line(
+                card_bg, RESIGN_CONFIRM_SPECULAR, (rad, 1), (w - rad, 1), width=1
+            )
+        pygame.draw.rect(
+            card_bg,
+            RESIGN_CONFIRM_BORDER,
+            (0, 0, w, h),
+            width=1,
+            border_radius=rad,
+        )
+        self._resign_confirm_card_bg = card_bg
+        self._resign_confirm_canvas = pygame.Surface((w, h), pygame.SRCALPHA)
+
+    def _draw_resign_confirm_button(
+        self,
+        target: pygame.Surface,
+        button: Button,
+        label: str,
+        *,
+        is_danger: bool,
+        ox: int,
+        oy: int,
+    ) -> None:
+        """Render a crisp modern gradient & beveled action button inside the resign popover."""
+        press_y = round(button._pressed_t) if button.press_feedback else 0
+        rect = button.base_rect.move(-ox, -oy + press_y)
+        rad = self._resign_confirm_btn_radius
+        ht = button._hover_t
+
+        if is_danger:
+            top_col = _lerp_tc_rgb(RESIGN_DANGER_TOP, RESIGN_DANGER_HOVER_TOP, ht)
+            bot_col = _lerp_tc_rgb(RESIGN_DANGER_BOT, RESIGN_DANGER_HOVER_BOT, ht)
+            shadow_col = RESIGN_DANGER_SHADOW
+            border_col = _lerp_tc_rgb((228, 72, 62), RESIGN_DANGER_BORDER, ht)
+            spec_col = (255, 134, 124)
+            text_col = RESIGN_DANGER_TEXT
+        else:
+            top_col = _lerp_tc_rgb(RESIGN_CANCEL_TOP, RESIGN_CANCEL_HOVER_TOP, ht)
+            bot_col = _lerp_tc_rgb(RESIGN_CANCEL_BOT, RESIGN_CANCEL_HOVER_BOT, ht)
+            shadow_col = RESIGN_CANCEL_SHADOW
+            border_col = _lerp_tc_rgb((82, 78, 74), RESIGN_CANCEL_BORDER, ht)
+            spec_col = (102, 98, 92)
+            text_col = RESIGN_CANCEL_TEXT
+
+        # Subtle bottom depth lip (tactile Chess.com 3D button feel)
+        lip_h = max(2, round(2 * self._scale))
+        pygame.draw.rect(
+            target, shadow_col, rect.move(0, lip_h), border_radius=rad
+        )
+
+        # Smooth vertical gradient fill clipped cleanly to rounded corners
+        btn_surf = pygame.Surface(rect.size, pygame.SRCALPHA)
+        bh = max(1, rect.height)
+        for y in range(bh):
+            t = y / max(1, bh - 1)
+            pygame.draw.line(
+                btn_surf, _lerp_tc_rgb(top_col, bot_col, t), (0, y), (rect.width - 1, y)
+            )
+        mask = pygame.Surface(rect.size, pygame.SRCALPHA)
+        pygame.draw.rect(mask, (255, 255, 255, 255), (0, 0, *rect.size), border_radius=rad)
+        btn_surf.blit(mask, (0, 0), special_flags=pygame.BLEND_RGBA_MULT)
+        target.blit(btn_surf, rect.topleft)
+
+        # Delicate top edge specular glint & crisp 1px outline
+        if rect.width > rad * 2 + 4:
+            pygame.draw.line(
+                target,
+                spec_col,
+                (rect.left + rad, rect.top + 1),
+                (rect.right - rad, rect.top + 1),
+                width=1,
+            )
+        pygame.draw.rect(target, border_col, rect, width=1, border_radius=rad)
+
+        text_surf = self._get_cached_text(self._font_resign_btn, label, text_col)
+        target.blit(text_surf, text_surf.get_rect(center=rect.center))
+
+    def _draw_resign_confirm_popover(self) -> None:
+        """Draw the floating Chess.com-style 'Are you sure you want to resign?' popover."""
+        r = self._resign_confirm_rect
+        raw_t = self._resign_confirm_anim if self._resign_confirm_anim > 0.01 else 1.0
+        eased = ease_progress(raw_t, "ease_out_cubic")
+
+        # Render full popover onto its local canvas so entrance fade/scale is crisp
+        canvas = self._resign_confirm_canvas
+        canvas.fill((0, 0, 0, 0))
+        canvas.blit(self._resign_confirm_card_bg, (0, 0))
+
+        inner_w = max(80, r.width - self._resign_confirm_pad_x * 2)
+        title_lines = self._get_wrapped_lines(
+            "Are you sure you want to resign?",
+            self._font_resign_title,
+            RESIGN_CONFIRM_TEXT,
+            inner_w,
+        )
+        line_h = self._font_resign_title.get_linesize()
+        for idx, line_surf in enumerate(title_lines):
+            canvas.blit(
+                line_surf,
+                line_surf.get_rect(
+                    midtop=(r.width // 2, self._resign_confirm_pad_y + idx * line_h)
+                ),
+            )
+
+        self._draw_resign_confirm_button(
+            canvas,
+            self._btn_resign_cancel,
+            "Cancel",
+            is_danger=False,
+            ox=r.left,
+            oy=r.top,
+        )
+        self._draw_resign_confirm_button(
+            canvas,
+            self._btn_resign_confirm,
+            "Resign",
+            is_danger=True,
+            ox=r.left,
+            oy=r.top,
+        )
+
+        if eased >= 0.999:
+            self._resign_confirm_shadow.set_alpha(255)
+            self.screen.blit(
+                self._resign_confirm_shadow,
+                self._resign_confirm_shadow.get_rect(center=r.center),
+            )
+            self.screen.blit(canvas, r.topleft)
+            return
+
+        slide_y = round(RESIGN_CONFIRM_SLIDE_PX * (1.0 - eased) * self._scale)
+        scale_f = RESIGN_CONFIRM_SCALE_START + (1.0 - RESIGN_CONFIRM_SCALE_START) * eased
+        sw = max(2, round(r.width * scale_f))
+        sh = max(2, round(r.height * scale_f))
+        scaled = pygame.transform.smoothscale(canvas, (sw, sh))
+        alpha = max(0, min(255, round(255 * eased)))
+        scaled.set_alpha(alpha)
+
+        shadow_copy = self._resign_confirm_shadow.copy()
+        shadow_copy.set_alpha(alpha)
+        dest_center = (r.centerx, r.centery + slide_y)
+        self.screen.blit(shadow_copy, shadow_copy.get_rect(center=dest_center))
+        self.screen.blit(scaled, scaled.get_rect(center=dest_center))
 
     def _draw_endgame_popup(self) -> None:
         t = self.popup_entrance_progress

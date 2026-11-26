@@ -310,6 +310,13 @@ def test_resign_draw_offer_and_close():
     assert not screen._game.is_game_over
 
     screen._handle_menu_action("resign")
+    assert screen.is_resign_confirm_open is True
+    assert not screen._game.is_game_over
+    confirm_pos = screen._btn_resign_confirm.base_rect.center
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=confirm_pos)]
+    )
+    assert screen.is_resign_confirm_open is False
     assert screen._game.is_game_over
     assert screen._result_text == "Resignation — Sick Ken wins."
     assert not screen._can_accept_input()
@@ -556,21 +563,92 @@ def test_move_list_scroll_and_clamping():
 def test_sidebar_resign_becomes_new_game_when_over():
     screen, _ = _game_screen("White")
     resign_pos = screen._btn_resign.base_rect.center
+
+    # 1. Clicking Resign opens the Chess.com-style confirmation popover instead of resigning immediately
     screen.handle_events(
         [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=resign_pos)]
     )
+    assert screen.is_resign_confirm_open is True
+    assert screen.captures_escape() is True
+    assert not screen._game.is_game_over
+    for _ in range(15):
+        screen.update(1 / 60.0)
+    screen.draw()
+
+    # Verify responsive layout bounds: card floats cleanly above Resign button with equal Cancel/Resign buttons
+    card = screen._resign_confirm_rect
+    assert card.bottom < screen._btn_resign.base_rect.top
+    assert card.contains(screen._btn_resign_cancel.base_rect)
+    assert card.contains(screen._btn_resign_confirm.base_rect)
+    assert screen._btn_resign_cancel.base_rect.right < screen._btn_resign_confirm.base_rect.left
+
+    # 2. Clicking Cancel dismisses popover and keeps the game running
+    cancel_pos = screen._btn_resign_cancel.base_rect.center
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=cancel_pos)]
+    )
+    assert screen.is_resign_confirm_open is False
+    assert not screen._game.is_game_over
+
+    # 3. Pressing Escape or clicking outside also dismisses cleanly
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=resign_pos)]
+    )
+    assert screen.is_resign_confirm_open is True
+    screen.handle_events([pygame.event.Event(pygame.KEYDOWN, key=pygame.K_ESCAPE)])
+    assert screen.is_resign_confirm_open is False
+
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=resign_pos)]
+    )
+    assert screen.is_resign_confirm_open is True
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=(20, 20))]
+    )
+    assert screen.is_resign_confirm_open is False
+    assert not screen._game.is_game_over
+
+    # 4. Clicking Resign -> confirming red Resign button ends the game
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=resign_pos)]
+    )
+    assert screen.is_resign_confirm_open is True
+    confirm_pos = screen._btn_resign_confirm.base_rect.center
+    screen.handle_events(
+        [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=confirm_pos)]
+    )
+    assert screen.is_resign_confirm_open is False
     assert screen._game.is_game_over
     assert screen._result_text == "Resignation — Sick Ken wins."
     screen.draw()
 
-    # Clicking the bottom button again starts a New Game
+    # 5. Clicking the bottom button again (now "New Game") starts a New Game directly
     screen.handle_events(
         [pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=resign_pos)]
     )
+    assert screen.is_resign_confirm_open is False
     assert not screen._game.is_game_over
     assert screen._show_endgame_popup is False
     assert screen._game.san_moves == []
     screen.close()
+
+    # 6. Verify resign confirmation popover stays within viewport across desktop/tablet/narrow sizes
+    for res in ((1280, 720), (1024, 600), (800, 600), (455, 720)):
+        surf = pygame.display.set_mode(res)
+        gs = GameScreen(surf, _OPPONENT)
+        gs._selected_side = "White"
+        gs._start_match()
+        gs._bot_worker.stop()
+        gs._bot_worker = None
+        gs._open_resign_confirm()
+        gs.update(0.25)
+        r = gs._resign_confirm_rect
+        assert 0 <= r.left and r.right <= res[0], f"Horizontal overflow at {res}: {r}"
+        assert 0 <= r.top and r.bottom <= res[1], f"Vertical overflow at {res}: {r}"
+        assert r.contains(gs._btn_resign_cancel.base_rect)
+        assert r.contains(gs._btn_resign_confirm.base_rect)
+        gs.draw()
+        gs.close()
 
 
 def test_endgame_popup_and_rematch_flow():
