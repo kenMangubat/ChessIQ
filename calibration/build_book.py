@@ -854,10 +854,12 @@ def query_book_moves(
             losses = int(r["losses"])
             decided = wins + draws + losses
             w_rate = round(wins / decided, 3) if decided > 0 else 0.5
-            if decided > 0 and w_rate < min_win_rate:
-                continue
             score = round((wins + 0.5 * draws) / decided, 3) if decided > 0 else 0.5
             w_count = round(float(r["weighted_count"]), 3)
+            # Filter noisy low-scoring sidelines by chess score (wins + 0.5*draws),
+            # while always preserving Ken's high-frequency / OTB repertoire lines.
+            if decided > 0 and score < min_win_rate and w_count < 6.0:
+                continue
             results.append(
                 {
                     "move_uci": r["move_uci"],

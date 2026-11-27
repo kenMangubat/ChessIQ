@@ -97,64 +97,64 @@ KEN_PROFILES: dict[str, KenProfile] = {
         elo=1350,
         temperature=1.05,
         engine_time_limit=0.05,
-        engine_multipv=10,
-        engine_temp=1.15,
-        blunder_chance=0.25,
+        engine_multipv=13,
+        engine_temp=1.25,
+        blunder_chance=0.27,
         tagline=get_greeting_text("sick_ken", "Bai gihilantan ko, pildiha daw ko bi"),
         description="A weaker take on your style,\nwith occasional tactical errors.",
-        max_cp_loss=175,
-        mistake_max_cp_loss=245,
+        max_cp_loss=205,
+        mistake_max_cp_loss=325,
         min_book_play_count=1,
         min_book_win_rate=0.0,
         book_fallback_tiers=(TIER_SICK, TIER_FOCUS, TIER_CONDITION),
-        eval_tiebreak_weight=0.04,
-        error_rate_scale=1.70,
+        eval_tiebreak_weight=0.025,
+        error_rate_scale=1.88,
         min_style_prob_ratio=0.30,
-        tactical_override_cp=160,
-        consistency_penalty=1.4,
+        tactical_override_cp=205,
+        consistency_penalty=1.35,
     ),
     "Focus Ken": KenProfile(
         name="Focus Ken",
         tier=TIER_FOCUS,
         elo=1800,
-        temperature=0.60,
+        temperature=0.56,
         engine_time_limit=0.08,
-        engine_multipv=9,
-        engine_temp=0.90,
+        engine_multipv=10,
+        engine_temp=0.89,
         blunder_chance=0.08,
         tagline=get_greeting_text("focus_ken", "Ha?? sure ka makig duwa ka nako"),
         description="Consistent decisions and\nyour familiar openings.",
-        max_cp_loss=125,
-        mistake_max_cp_loss=210,
+        max_cp_loss=124,
+        mistake_max_cp_loss=212,
         min_book_play_count=1,
-        min_book_win_rate=0.15,
+        min_book_win_rate=0.08,
         book_fallback_tiers=(TIER_FOCUS, TIER_CONDITION, TIER_SICK),
-        eval_tiebreak_weight=0.12,
-        error_rate_scale=1.05,
+        eval_tiebreak_weight=0.13,
+        error_rate_scale=1.00,
         min_style_prob_ratio=0.30,
-        tactical_override_cp=110,
-        consistency_penalty=1.7,
+        tactical_override_cp=112,
+        consistency_penalty=1.68,
     ),
     "Condition Ken": KenProfile(
         name="Condition Ken",
         tier=TIER_CONDITION,
         elo=2350,
-        temperature=0.30,
-        engine_time_limit=0.11,
+        temperature=0.25,
+        engine_time_limit=0.115,
         engine_multipv=8,
-        engine_temp=0.78,
+        engine_temp=0.71,
         blunder_chance=0.0,
         tagline=get_greeting_text("condition_ken", "hmmm dependi kong 3 yan!"),
         description="Advanced tactical and\npositional precision.",
-        max_cp_loss=78,
-        mistake_max_cp_loss=145,
+        max_cp_loss=70,
+        mistake_max_cp_loss=134,
         min_book_play_count=1,
-        min_book_win_rate=0.22,
+        min_book_win_rate=0.12,
         book_fallback_tiers=(TIER_CONDITION, TIER_FOCUS),
-        eval_tiebreak_weight=0.22,
-        error_rate_scale=0.42,
+        eval_tiebreak_weight=0.30,
+        error_rate_scale=0.36,
         min_style_prob_ratio=0.25,
-        tactical_override_cp=70,
+        tactical_override_cp=66,
         consistency_penalty=1.8,
     ),
 }
@@ -415,8 +415,9 @@ class KenBot:
             if isinstance(self.tier_style, dict)
             else None
         )
-        m_data = color_m if (color_m and color_m.get("analyzed_moves", 0) >= 15) else (tier_m or color_m)
-        if not m_data:
+        tier_ok = bool(tier_m and tier_m.get("analyzed_moves", 0) >= 40)
+        color_ok = bool(color_m and color_m.get("analyzed_moves", 0) >= 15)
+        if not tier_ok and not color_ok:
             base_rate = 0.14
             err_dist = {
                 "hanging_piece": 0.18,
@@ -427,13 +428,27 @@ class KenBot:
             }
             return base_rate, err_dist
 
-        # Combine inaccuracies (60-150 cp) and mistakes (150-300 cp) proportionally
-        base_rate = (
-            0.70 * float(m_data.get("mistake_rate_60_150", 0.12))
-            + 1.00 * float(m_data.get("mistake_rate_150_300", 0.05))
-        )
-        err_dist = dict(m_data.get("error_type_dist", {}))
-        return max(0.02, min(0.35, base_rate)), err_dist
+        def _rate_from(md: dict[str, Any]) -> float:
+            return (
+                0.70 * float(md.get("mistake_rate_60_150", 0.12))
+                + 1.00 * float(md.get("mistake_rate_150_300", 0.05))
+                + 1.15 * float(md.get("blunder_rate_300plus", 0.02))
+            )
+
+        if tier_ok and color_ok:
+            base_rate = 0.70 * _rate_from(tier_m) + 0.30 * _rate_from(color_m)
+            t_dist = dict(tier_m.get("error_type_dist", {}))
+            c_dist = dict(color_m.get("error_type_dist", {}))
+            all_keys = set(t_dist) | set(c_dist)
+            err_dist = {
+                k: 0.70 * float(t_dist.get(k, 0.0)) + 0.30 * float(c_dist.get(k, 0.0))
+                for k in all_keys
+            }
+        else:
+            m_data = tier_m if tier_ok else color_m
+            base_rate = _rate_from(m_data)
+            err_dist = dict(m_data.get("error_type_dist", {}))
+        return max(0.02, min(0.42, base_rate)), err_dist
 
     def _select_book_move(
         self,
@@ -639,7 +654,7 @@ class KenBot:
             and (best_mate == 1 or (best_mate <= 2 and self.profile.tier != TIER_SICK))
         )
 
-        # Compute move-level style probabilities over ALL legal moves
+        # Compute move-level style probabilities over ALL legal moves (tier-aware Ken DNA)
         style_probs, style_reasons = score_legal_moves_style(
             board,
             color_str=side,
@@ -647,6 +662,7 @@ class KenBot:
             style_profile=self.style_profile,
             prev_own_move=self._last_bot_move,
             prev_opp_move=self._last_opp_move,
+            tier=self.profile.tier,
         )
 
         uniform_prob = 1.0 / max(1, len(legal_moves))
@@ -744,7 +760,7 @@ class KenBot:
                 and len(safe_list) >= 1
             ):
                 base_err_rate, err_dist = self._get_phase_mistake_config(side, phase)
-                effective_err_prob = min(0.45, base_err_rate * self.profile.error_rate_scale)
+                effective_err_prob = min(0.52, base_err_rate * self.profile.error_rate_scale)
                 if random.random() < effective_err_prob:
                     trigger_error = True
 

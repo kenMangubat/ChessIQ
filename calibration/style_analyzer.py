@@ -117,6 +117,20 @@ STYLE_FEATURE_NAMES: tuple[str, ...] = (
     "creates_doubled_pawn",
     "repeats_own_piece",
     "psq_log_prior",
+    # ── v2.1 rich human behavioral & tactical-style features ──
+    "saves_attacked_piece",
+    "attacks_enemy_piece",
+    "attacks_undefended_enemy",
+    "recapture_towards_center",
+    "capture_high_value_victim",
+    "is_losing_capture",
+    "is_retreat_unprovoked",
+    "is_retreat_from_attack",
+    "develops_queen_early",
+    "connects_rooks",
+    "doubles_rooks_or_battery",
+    "trading_minor_for_minor",
+    "from_to_log_prior",
 )
 
 NUM_STYLE_FEATURES: int = len(STYLE_FEATURE_NAMES)
@@ -505,6 +519,29 @@ def _build_board_context(
         + 900 * len(board.pieces(chess.QUEEN, opp))
     )
 
+    enemy_major_minor_mask = (
+        board.pieces_mask(chess.KNIGHT, opp)
+        | board.pieces_mask(chess.BISHOP, opp)
+        | board.pieces_mask(chess.ROOK, opp)
+        | board.pieces_mask(chess.QUEEN, opp)
+    )
+    enemy_undefended_major_minor = enemy_major_minor_mask & (~enemy_attacks)
+    friendly_heavy_files: dict[int, int] = {}
+    for pt_h in (chess.ROOK, chess.QUEEN):
+        for sq in board.pieces(pt_h, turn):
+            f_h = chess.square_file(sq)
+            friendly_heavy_files[f_h] = friendly_heavy_files.get(f_h, 0) + 1
+    back_rank_idx = 0 if turn == chess.WHITE else 7
+    back_rank_between_rooks = 0
+    own_rooks = list(board.pieces(chess.ROOK, turn))
+    if len(own_rooks) == 2:
+        r_files = sorted(chess.square_file(sq) for sq in own_rooks)
+        if all(chess.square_rank(sq) == back_rank_idx for sq in own_rooks):
+            for f_bt in range(r_files[0] + 1, r_files[1]):
+                sq_bt = chess.square(f_bt, back_rank_idx)
+                if board.piece_at(sq_bt) is not None:
+                    back_rank_between_rooks |= chess.BB_SQUARES[sq_bt]
+
     return {
         "turn": turn,
         "opp": opp,
@@ -521,6 +558,11 @@ def _build_board_context(
         "passed_pawn_squares": passed_pawn_squares,
         "prev_own_to": prev_own_move.to_square if prev_own_move is not None else -1,
         "prev_opp_to": prev_opp_move.to_square if prev_opp_move is not None else -1,
+        "enemy_major_minor_mask": enemy_major_minor_mask,
+        "enemy_undefended_major_minor": enemy_undefended_major_minor,
+        "friendly_heavy_files": friendly_heavy_files,
+        "back_rank_between_rooks": back_rank_between_rooks,
+        "eff_ply": effective_ply(board),
     }
 
 
@@ -530,6 +572,7 @@ def extract_legal_move_features(
     psq_log_prior: list[list[float]] | None = None,
     prev_own_move: chess.Move | None = None,
     prev_opp_move: chess.Move | None = None,
+    from_to_log_prior: dict[str, float] | None = None,
 ) -> np.ndarray:
     """Extract a (len(legal_moves), NUM_STYLE_FEATURES) float64 feature matrix."""
     n = len(legal_moves)
@@ -554,6 +597,11 @@ def extract_legal_move_features(
     mat_diff = ctx["mat_diff"]
     prev_own_to = ctx["prev_own_to"]
     prev_opp_to = ctx["prev_opp_to"]
+    enemy_major_minor_mask = ctx["enemy_major_minor_mask"]
+    enemy_undefended_major_minor = ctx["enemy_undefended_major_minor"]
+    friendly_heavy_files = ctx["friendly_heavy_files"]
+    back_rank_between_rooks = ctx["back_rank_between_rooks"]
+    eff_ply = ctx["eff_ply"]
 
     for i, move in enumerate(legal_moves):
         from_sq = move.from_square
@@ -693,6 +741,80 @@ def extract_legal_move_features(
         if psq_log_prior is not None:
             feats[i, 35] = float(psq_log_prior[pt_idx][to_sq])
 
+        # ── v2.1 behavioral & tactical-style features (indices 36..48) ──
+        from_attacked = bool((enemy_attacks >> from_sq) & 1)
+        to_attacked = bool((enemy_attacks >> to_sq) & 1)
+
+        # 36: Moving a currently threatened non-pawn piece to safety
+        if pt != chess.PAWN and from_attacked and not to_attacked:
+            feats[i, 36] = 1.0
+
+        # 37-38: Threatening enemy minor/major pieces (and undefended ones) from to_sq
+        if pt != chess.KING:
+            if pt == chess.PAWN:
+                att_mask = chess.BB_PAWN_ATTACKS[turn][to_sq]
+            elif pt == chess.KNIGHT:
+                att_mask = chess.BB_KNIGHT_ATTACKS[to_sq]
+            elif pt == chess.BISHOP:
+                att_mask = chess.BB_DIAG_ATTACKS[to_sq][chess.BB_DIAG_MASKS[to_sq] & board.occupied]
+            elif pt == chess.ROOK:
+                occ = board.occupied
+                att_mask = (
+                    chess.BB_RANK_ATTACKS[to_sq][chess.BB_RANK_MASKS[to_sq] & occ]
+                    | chess.BB_FILE_ATTACKS[to_sq][chess.BB_FILE_MASKS[to_sq] & occ]
+                )
+            else:  # Queen
+                occ = board.occupied
+                att_mask = (
+                    chess.BB_DIAG_ATTACKS[to_sq][chess.BB_DIAG_MASKS[to_sq] & occ]
+                    | chess.BB_RANK_ATTACKS[to_sq][chess.BB_RANK_MASKS[to_sq] & occ]
+                    | chess.BB_FILE_ATTACKS[to_sq][chess.BB_FILE_MASKS[to_sq] & occ]
+                )
+            if att_mask & enemy_major_minor_mask:
+                feats[i, 37] = 1.0
+            if att_mask & enemy_undefended_major_minor:
+                feats[i, 38] = 1.0
+
+        # 39-41, 47: Capture nuances (towards center, high-value victim, losing capture, minor-for-minor)
+        if is_cap:
+            victim = board.piece_at(to_sq)
+            v_pt = victim.piece_type if victim else chess.PAWN
+            v_val = PIECE_VALUES.get(v_pt, 100)
+            a_val = PIECE_VALUES.get(pt, 0)
+            if pt == chess.PAWN and abs(to_file - 3.5) < abs(from_file - 3.5):
+                feats[i, 39] = 1.0
+            if v_val >= 320:
+                feats[i, 40] = 1.0
+            if a_val > v_val + 50 and to_attacked:
+                feats[i, 41] = 1.0
+            if pt in (chess.KNIGHT, chess.BISHOP) and v_pt in (chess.KNIGHT, chess.BISHOP):
+                feats[i, 47] = 1.0
+
+        # 42-43: Unprovoked retreat vs defensive retreat from attack
+        if rank_delta < 0 and pt in (chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN) and not is_cap:
+            if from_attacked:
+                feats[i, 43] = 1.0
+            else:
+                feats[i, 42] = 1.0
+
+        # 44: Early queen sortie (opening ply <= 14)
+        if pt == chess.QUEEN and eff_ply <= 14 and from_rank == back_rank and to_rank != back_rank:
+            feats[i, 44] = 1.0
+
+        # 45: Clearing the last piece between back-rank rooks (connecting rooks)
+        if back_rank_between_rooks and ((back_rank_between_rooks >> from_sq) & 1) and to_rank != back_rank:
+            if (back_rank_between_rooks & ~chess.BB_SQUARES[from_sq]) == 0:
+                feats[i, 45] = 1.0
+
+        # 46: Doubling rooks or forming a Q+R vertical battery on a file
+        if pt in (chess.ROOK, chess.QUEEN) and to_file != from_file:
+            if friendly_heavy_files.get(to_file, 0) >= 1:
+                feats[i, 46] = 1.0
+
+        # 48: Empirical-Bayes smoothed (piece, from_sq -> to_sq) maneuver prior
+        if from_to_log_prior is not None:
+            feats[i, 48] = float(from_to_log_prior.get(f"{pt_idx}:{move.uci()[:4]}", 0.0))
+
     return feats
 
 
@@ -768,8 +890,13 @@ def score_legal_moves_style(
     style_profile: dict[str, Any],
     prev_own_move: chess.Move | None = None,
     prev_opp_move: chess.Move | None = None,
+    tier: str | None = None,
 ) -> tuple[dict[str, float], dict[str, list[tuple[str, float]]]]:
     """Compute calibrated style probabilities over all legal moves for `(color_str, phase)`.
+
+    When `tier` is provided and tier-specific weights exist in `style_profile["by_tier_color"]`,
+    smoothly blends the tier-specific model with Ken's global color model via Empirical Bayes
+    shrinkage so each bot mirrors Ken's behavior at its own Elo band.
 
     Returns `(probs_by_uci, top_reasons_by_uci)` where `probs_by_uci` sums to 1.0
     and `top_reasons_by_uci` maps each UCI move to its top 3 contributing feature
@@ -805,6 +932,7 @@ def score_legal_moves_style(
         )
 
     psq_prior = model.get("psq_log_prior")
+    from_to_prior = model.get("from_to_log_prior")
     train_pos = int(model.get("train_positions", 0))
     # Empirical shrinkage toward uniform when training data in this bucket is thin
     confidence = train_pos / (train_pos + 40.0) if train_pos > 0 else 0.0
@@ -815,8 +943,27 @@ def score_legal_moves_style(
         psq_log_prior=psq_prior,
         prev_own_move=prev_own_move,
         prev_opp_move=prev_opp_move,
+        from_to_log_prior=from_to_prior,
     )
-    logits = (X @ weights) * confidence
+    eff_weights = weights * confidence
+
+    # Blend tier-specific Ken behavior model when available
+    if tier is not None:
+        t_model = (
+            style_profile.get("by_tier_color", {})
+            .get(tier, {})
+            .get(color_key, {})
+            .get(phase_key)
+        )
+        if t_model and t_model.get("weights"):
+            t_w = np.array(t_model["weights"], dtype=np.float64)
+            t_pos = int(t_model.get("train_positions", 0))
+            if t_w.shape[0] == NUM_STYLE_FEATURES and t_pos >= 50:
+                t_conf = t_pos / (t_pos + 40.0)
+                t_alpha = min(0.65, t_pos / (t_pos + 500.0))
+                eff_weights = (1.0 - t_alpha) * eff_weights + t_alpha * (t_w * t_conf)
+
+    logits = X @ eff_weights
     logits -= np.max(logits)
     exp_l = np.exp(logits)
     probs = exp_l / float(np.sum(exp_l))
@@ -826,7 +973,7 @@ def score_legal_moves_style(
     for idx, mv in enumerate(legal_moves):
         uci = mv.uci()
         probs_by_uci[uci] = float(probs[idx])
-        contribs = X[idx] * weights * confidence
+        contribs = X[idx] * eff_weights
         # Pick top 3 features by absolute contribution (nonzero only)
         top_idx = np.argsort(np.abs(contribs))[::-1][:3]
         reasons_by_uci[uci] = [
@@ -1227,11 +1374,12 @@ def _aggregate_mistake_stats(
 def train_ken_style_profile(
     db_path: Path = BOOK_DB_PATH,
     split_filter: str | None = None,
-    max_positions_per_bucket: int = 3200,
+    max_positions_per_bucket: int = 6500,
+    max_tier_positions_per_bucket: int = 2400,
     seed: int = 42,
     verbose: bool = True,
 ) -> dict[str, Any]:
-    """Train Ken's White/Black move-level style models and tier DNA from `ingested_games`.
+    """Train Ken's White/Black & tier-specific move-level style models from `ingested_games`.
 
     Pass `split_filter="train"` when evaluating on `split="holdout"` so there is
     zero leakage between training and evaluation.
@@ -1251,9 +1399,17 @@ def train_ken_style_profile(
     query += " ORDER BY is_otb DESC, game_date DESC, dedupe_key DESC"
     rows = conn.execute(query, params).fetchall()
 
-    # Pass 1: Aggregate behavioral stats + smoothed piece-square tables over ALL selected games
+    # Pass 1: Aggregate behavioral stats + smoothed piece-square & from-to maneuver tables
     psq_counts: dict[str, dict[str, np.ndarray]] = {
         c: {p: np.zeros((6, 64), dtype=np.float64) for p in PHASES}
+        for c in COLORS
+    }
+    from_to_counts: dict[str, dict[str, dict[str, float]]] = {
+        c: {p: {} for p in PHASES}
+        for c in COLORS
+    }
+    from_to_totals: dict[str, dict[str, float]] = {
+        c: {p: 0.0 for p in PHASES}
         for c in COLORS
     }
     color_meta: dict[str, dict[str, Any]] = {
@@ -1297,10 +1453,14 @@ def train_ken_style_profile(
         for tier in TIERS
     }
 
-    # Candidate position pool for conditional logit fitting:
-    # Store lightweight tuples (fen, chosen_uci, weight, prev_own_uci, prev_opp_uci, is_otb)
-    position_pools: dict[tuple[str, str], list[tuple[str, str, float, str | None, str | None, int]]] = {
-        (c, p): [] for c in COLORS for p in PHASES
+    # Candidate position pools stratified by (tier, color, phase) so stronger/recent tiers
+    # are never drowned out by early beginner games, and each tier trains its own model too.
+    # Tuple: (fen, chosen_uci, weight, prev_own_uci, prev_opp_uci, is_otb)
+    tier_position_pools: dict[tuple[str, str, str], list[tuple[str, str, float, str | None, str | None, int]]] = {
+        (t, c, p): [] for t in TIERS for c in COLORS for p in PHASES
+    }
+    tier_phase_seen: dict[tuple[str, str, str], int] = {
+        (t, c, p): 0 for t in TIERS for c in COLORS for p in PHASES
     }
 
     for _, side, tier, is_otb, weight, _, moves_str in rows:
@@ -1340,7 +1500,12 @@ def train_ken_style_profile(
 
                 piece = board.piece_at(move.from_square)
                 if piece is not None:
-                    psq_counts[side][phase][piece.piece_type - 1, move.to_square] += w
+                    pt_i = piece.piece_type - 1
+                    psq_counts[side][phase][pt_i, move.to_square] += w
+                    ft_key = f"{pt_i}:{uci[:4]}"
+                    ft_bucket = from_to_counts[side][phase]
+                    ft_bucket[ft_key] = ft_bucket.get(ft_key, 0.0) + w
+                    from_to_totals[side][phase] += w
 
                 if board.is_castling(move):
                     ken_castled = True
@@ -1404,18 +1569,18 @@ def train_ken_style_profile(
                             if is_7th:
                                 t_data["eg_rook_7th_ranks"] += 1
 
-                # Reservoir-collect positions for conditional logit (all OTB + sampled online)
-                # Skip forced 1-move positions (trivial)
+                # Reservoir-collect positions per (tier, side, phase) (always keep all OTB)
                 if ply_idx >= 4:
-                    pool_list = position_pools[(side, phase)]
-                    # Keep every OTB position and sample online moves to keep memory bounded
-                    if is_otb or len(pool_list) < max_positions_per_bucket * 3:
+                    tk = (tier, side, phase)
+                    tier_phase_seen[tk] += 1
+                    pool_list = tier_position_pools[tk]
+                    cap_pool = max_tier_positions_per_bucket * 2
+                    if is_otb or len(pool_list) < cap_pool:
                         pool_list.append(
                             (board.fen(), uci, w, prev_own_uci, prev_opp_uci, int(is_otb))
                         )
                     else:
-                        # Reservoir replacement for online moves
-                        j = rng.randint(0, color_meta[side]["phase_moves"][phase] - 1)
+                        j = rng.randint(0, tier_phase_seen[tk] - 1)
                         if j < len(pool_list) and pool_list[j][5] == 0:
                             pool_list[j] = (
                                 board.fen(), uci, w, prev_own_uci, prev_opp_uci, 0
@@ -1446,49 +1611,115 @@ def train_ken_style_profile(
                 table.append([round(float(v), 4) for v in log_p])
             psq_log_priors[c][p] = table
 
-    # Pass 2: Fit conditional logit weights per (color, phase)
-    color_models: dict[str, dict[str, dict[str, Any]]] = {c: {} for c in COLORS}
+    # Convert (piece, from_sq -> to_sq) maneuver counts into compact Empirical-Bayes log-priors
+    from_to_log_priors: dict[str, dict[str, dict[str, float]]] = {c: {} for c in COLORS}
     for c in COLORS:
         for p in PHASES:
-            pool_items = position_pools[(c, p)]
-            # Always keep all OTB positions, then sample remaining up to max_positions_per_bucket
-            otb_items = [item for item in pool_items if item[5] == 1]
-            online_items = [item for item in pool_items if item[5] == 0]
-            budget = max(0, max_positions_per_bucket - len(otb_items))
-            if len(online_items) > budget:
-                online_items = rng.sample(online_items, budget)
-            chosen_items = otb_items + online_items
+            ft_map = from_to_counts[c][p]
+            tot = max(from_to_totals[c][p], 1.0)
+            n_keys = max(len(ft_map), 1)
+            avg_count = tot / n_keys
+            scored_ft: list[tuple[str, float]] = []
+            for k, cnt in ft_map.items():
+                if cnt < 3.0:
+                    continue
+                val = math.log((cnt + 3.0) / (avg_count + 3.0))
+                val = max(-2.0, min(2.5, val))
+                if abs(val) >= 0.12:
+                    scored_ft.append((k, round(val, 4)))
+            scored_ft.sort(key=lambda kv: abs(kv[1]), reverse=True)
+            from_to_log_priors[c][p] = dict(scored_ft[:240])
 
-            train_samples: list[tuple[np.ndarray, int, float]] = []
+    def _build_samples(
+        items: list[tuple[str, str, float, str | None, str | None, int]],
+        psq_table: list[list[float]],
+        ft_prior: dict[str, float],
+    ) -> list[tuple[np.ndarray, int, float]]:
+        samples: list[tuple[np.ndarray, int, float]] = []
+        for fen, uci, w, prev_own_s, prev_opp_s, _ in items:
+            b = chess.Board(fen)
+            legal = list(b.legal_moves)
+            if len(legal) <= 1:
+                continue
+            target_idx = -1
+            for idx, mv in enumerate(legal):
+                if mv.uci() == uci:
+                    target_idx = idx
+                    break
+            if target_idx == -1:
+                continue
+            prev_own_mv = chess.Move.from_uci(prev_own_s) if prev_own_s else None
+            prev_opp_mv = chess.Move.from_uci(prev_opp_s) if prev_opp_s else None
+            X = extract_legal_move_features(
+                b,
+                legal,
+                psq_log_prior=psq_table,
+                prev_own_move=prev_own_mv,
+                prev_opp_move=prev_opp_mv,
+                from_to_log_prior=ft_prior,
+            )
+            samples.append((X, target_idx, w))
+        return samples
+
+    # Pass 2: Fit conditional logit weights per (color, phase) using tier-stratified pools
+    # PLUS per-(tier, color, phase) specialized style models!
+    color_models: dict[str, dict[str, dict[str, Any]]] = {c: {} for c in COLORS}
+    tier_color_models: dict[str, dict[str, dict[str, Any]]] = {
+        t: {c: {} for c in COLORS} for t in TIERS
+    }
+    tier_quotas = {
+        TIER_CONDITION: 0.40,  # prioritize Ken's strongest + OTB play in core DNA
+        TIER_FOCUS: 0.38,
+        TIER_SICK: 0.22,
+    }
+    for c in COLORS:
+        for p in PHASES:
             psq_table = psq_log_priors[c][p]
-            for fen, uci, w, prev_own_s, prev_opp_s, _ in chosen_items:
-                b = chess.Board(fen)
-                legal = list(b.legal_moves)
-                if len(legal) <= 1:
-                    continue
-                target_idx = -1
-                for idx, mv in enumerate(legal):
-                    if mv.uci() == uci:
-                        target_idx = idx
-                        break
-                if target_idx == -1:
-                    continue
-                prev_own_mv = chess.Move.from_uci(prev_own_s) if prev_own_s else None
-                prev_opp_mv = chess.Move.from_uci(prev_opp_s) if prev_opp_s else None
-                X = extract_legal_move_features(
-                    b,
-                    legal,
-                    psq_log_prior=psq_table,
-                    prev_own_move=prev_own_mv,
-                    prev_opp_move=prev_opp_mv,
-                )
-                train_samples.append((X, target_idx, w))
+            ft_prior = from_to_log_priors[c][p]
 
-            weights = _fit_conditional_logit(train_samples, l2_reg=8.0)
+            # Build per-tier samples first (reused for both tier model and global stratified pool)
+            tier_chosen: dict[str, list[tuple[str, str, float, str | None, str | None, int]]] = {}
+            tier_built_samples: dict[str, list[tuple[np.ndarray, int, float]]] = {}
+            for t in TIERS:
+                pool_items = tier_position_pools[(t, c, p)]
+                otb_items = [item for item in pool_items if item[5] == 1]
+                online_items = [item for item in pool_items if item[5] == 0]
+                t_budget = max(0, max_tier_positions_per_bucket - len(otb_items))
+                if len(online_items) > t_budget:
+                    online_items = rng.sample(online_items, t_budget)
+                chosen_t = otb_items + online_items
+                tier_chosen[t] = chosen_t
+                s_t = _build_samples(chosen_t, psq_table, ft_prior)
+                tier_built_samples[t] = s_t
+                t_weights = _fit_conditional_logit(s_t, l2_reg=10.0) if len(s_t) >= 40 else [0.0] * NUM_STYLE_FEATURES
+                tier_color_models[t][c][p] = {
+                    "weights": t_weights,
+                    "train_positions": len(s_t),
+                }
+
+            # Assemble stratified global (color, phase) sample set up to max_positions_per_bucket
+            global_samples: list[tuple[np.ndarray, int, float]] = []
+            leftover: list[tuple[np.ndarray, int, float]] = []
+            for t in TIERS:
+                s_t = tier_built_samples[t]
+                q = int(round(max_positions_per_bucket * tier_quotas[t]))
+                if len(s_t) <= q:
+                    global_samples.extend(s_t)
+                else:
+                    idxs = list(range(len(s_t)))
+                    rng.shuffle(idxs)
+                    global_samples.extend(s_t[i] for i in idxs[:q])
+                    leftover.extend(s_t[i] for i in idxs[q:])
+            if len(global_samples) < max_positions_per_bucket and leftover:
+                need = max_positions_per_bucket - len(global_samples)
+                global_samples.extend(rng.sample(leftover, min(need, len(leftover))))
+
+            weights = _fit_conditional_logit(global_samples, l2_reg=8.0)
             color_models[c][p] = {
                 "weights": weights,
                 "psq_log_prior": psq_table,
-                "train_positions": len(train_samples),
+                "from_to_log_prior": ft_prior,
+                "train_positions": len(global_samples),
             }
             if verbose:
                 top_f = sorted(
@@ -1497,8 +1728,10 @@ def train_ken_style_profile(
                     reverse=True,
                 )[:4]
                 top_str = ", ".join(f"{k}={v:+.2f}" for k, v in top_f)
+                t_counts_str = "/".join(str(tier_color_models[t][c][p]["train_positions"]) for t in TIERS)
                 print(
-                    f"  Trained [{c.upper():5s}/{p:10s}] on {len(train_samples):4d} positions | top: {top_str}"
+                    f"  Trained [{c.upper():5s}/{p:10s}] on {len(global_samples):4d} pos "
+                    f"(S/F/C={t_counts_str}) | top: {top_str}"
                 )
 
     # Aggregate offline Stockfish mistake stats & real human engine-top-1 agreement
@@ -1614,7 +1847,7 @@ def train_ken_style_profile(
 
     elapsed = round(time.time() - t0, 2)
     profile: dict[str, Any] = {
-        "version": "2.0",
+        "version": "2.1",
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "split_filter": split_filter or "all",
         "total_games_scanned": total_db_games,
@@ -1634,12 +1867,13 @@ def train_ken_style_profile(
             }
             for c in COLORS
         },
+        "by_tier_color": tier_color_models,
         "tiers": tiers_out,
     }
 
     if verbose:
         print(
-            f"Style profile v2.0 trained in {elapsed:.2f}s over {len(rows)} games "
+            f"Style profile v2.1 trained in {elapsed:.2f}s over {len(rows)} games "
             f"(White={color_meta['white']['games_count']}, Black={color_meta['black']['games_count']}, "
             f"OTB={color_meta['white']['otb_games'] + color_meta['black']['otb_games']})."
         )
@@ -1698,7 +1932,7 @@ def evaluate_holdout_style(
         return {"error": "No holdout games available.", "positions_evaluated": 0}
 
     train_profile = train_ken_style_profile(
-        db_path=db_path, split_filter="train", max_positions_per_bucket=2400, verbose=False
+        db_path=db_path, split_filter="train", max_positions_per_bucket=5000, verbose=False
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
